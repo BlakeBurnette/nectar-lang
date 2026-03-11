@@ -1,0 +1,60 @@
+// Todo App in Arc
+// Demonstrates: structs, enums, ownership, collections, components
+
+struct Todo {
+    id: u32,
+    text: String,
+    done: bool,
+}
+
+enum Filter {
+    All,
+    Active,
+    Completed,
+}
+
+component TodoApp() {
+    let mut todos: [Todo] = [];
+    let mut next_id: u32 = 0;
+    let mut filter: Filter = Filter::All;
+
+    fn add_todo(&mut self, text: String) {
+        let todo = Todo {
+            id: self.next_id,
+            text: text,
+            done: false,
+        };
+        self.next_id = self.next_id + 1;
+        // Ownership: todo is moved into the collection
+        self.todos.push(todo);
+    }
+
+    fn toggle(&mut self, id: u32) {
+        for todo in &mut self.todos {
+            if todo.id == id {
+                todo.done = !todo.done;
+            }
+        }
+    }
+
+    fn visible_todos(&self) -> [&Todo] {
+        match self.filter {
+            Filter::All => &self.todos,
+            Filter::Active => self.todos.iter().filter(fn(t: &Todo) -> bool { !t.done }),
+            Filter::Completed => self.todos.iter().filter(fn(t: &Todo) -> bool { t.done }),
+        }
+    }
+
+    render {
+        <div>
+            <h1>"Arc Todo"</h1>
+            <div>
+                <input placeholder="What needs to be done?" />
+                <button on:click={self.add_todo}>"Add"</button>
+            </div>
+            <ul>
+                {self.visible_todos()}
+            </ul>
+        </div>
+    }
+}

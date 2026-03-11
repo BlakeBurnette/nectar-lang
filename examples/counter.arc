@@ -1,0 +1,23 @@
+// Counter in Arc
+// Demonstrates: state, signals, event handlers, ownership
+
+component Counter(initial: i32) {
+    let mut count: i32 = initial;
+
+    fn increment(&mut self) {
+        self.count = self.count + 1;
+    }
+
+    fn decrement(&mut self) {
+        self.count = self.count - 1;
+    }
+
+    render {
+        <div>
+            <h2>"Counter"</h2>
+            <span>{self.count}</span>
+            <button on:click={self.increment}>"+1"</button>
+            <button on:click={self.decrement}>"-1"</button>
+        </div>
+    }
+}

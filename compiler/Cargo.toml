@@ -1,0 +1,23 @@
+[package]
+name = "arc-lang"
+version = "0.1.0"
+edition = "2024"
+description = "The Arc programming language — ownership-based, component-oriented, compiles to WebAssembly"
+
+[[bin]]
+name = "arc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+semver = "1"
+dirs = "6"
+sha2 = "0.10"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

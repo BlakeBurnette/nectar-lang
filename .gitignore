@@ -1,0 +1,10 @@
+/target
+*.tfplan
+*.tfstate
+*.tfstate.backup
+.terraform/
+.DS_Store
+*.wasm
+*.wat
+node_modules/
+Arc.lock

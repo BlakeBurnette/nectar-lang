@@ -1,0 +1,122 @@
+// Global Store in Arc
+// Demonstrates: Flux-like global state, actions, computed values, effects
+
+struct User {
+    id: u32,
+    name: String,
+    email: String,
+}
+
+enum AuthStatus {
+    LoggedOut,
+    Loading,
+    LoggedIn(User),
+    Error(String),
+}
+
+// Global store — accessible from any component
+store AuthStore {
+    signal status: AuthStatus = AuthStatus::LoggedOut;
+    signal token: String = "";
+
+    // Synchronous action
+    action logout(&mut self) {
+        self.status = AuthStatus::LoggedOut;
+        self.token = "";
+    }
+
+    // Async action — fetches from API
+    async action login(&mut self, email: String, password: String) {
+        self.status = AuthStatus::Loading;
+
+        let response = await fetch("https://api.example.com/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: format("{\"email\": \"{}\", \"password\": \"{}\"}", email, password),
+        });
+
+        if response.status == 200 {
+            let user = response.json();
+            self.token = response.headers.get("Authorization");
+            self.status = AuthStatus::LoggedIn(user);
+        } else {
+            self.status = AuthStatus::Error("Login failed");
+        }
+    }
+
+    // Computed value — derived from signals
+    computed is_logged_in(&self) -> bool {
+        match self.status {
+            AuthStatus::LoggedIn(_) => true,
+            _ => false,
+        }
+    }
+
+    // Effect — runs whenever dependencies change
+    effect on_auth_change(&self) {
+        match self.status {
+            AuthStatus::LoggedIn(user) => {
+                println(format("User logged in: {}", user.name));
+            }
+            AuthStatus::Error(msg) => {
+                println(format("Auth error: {}", msg));
+            }
+            _ => {}
+        }
+    }
+}
+
+// Counter store — simple example
+store CounterStore {
+    signal count: i32 = 0;
+    signal step: i32 = 1;
+
+    action increment(&mut self) {
+        self.count = self.count + self.step;
+    }
+
+    action decrement(&mut self) {
+        self.count = self.count - self.step;
+    }
+
+    action set_step(&mut self, new_step: i32) {
+        self.step = new_step;
+    }
+
+    computed double_count(&self) -> i32 {
+        self.count * 2
+    }
+}
+
+// Component that uses the store
+component LoginForm() {
+    let mut email: String = "";
+    let mut password: String = "";
+
+    fn handle_submit(&mut self) {
+        // Dispatch action to global store
+        AuthStore::login(self.email, self.password);
+    }
+
+    render {
+        <div>
+            <h2>"Login"</h2>
+            <input type="email" value={self.email} />
+            <input type="password" value={self.password} />
+            <button on:click={self.handle_submit}>"Sign In"</button>
+        </div>
+    }
+}
+
+component Dashboard() {
+    render {
+        <div>
+            <h1>"Dashboard"</h1>
+            <p>{format("Count: {} (double: {})",
+                CounterStore::get_count(),
+                CounterStore::double_count())}</p>
+            <button on:click={CounterStore::increment}>"+"</button>
+            <button on:click={CounterStore::decrement}>"-"</button>
+        </div>
+    }
+}
