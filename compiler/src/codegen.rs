@@ -66,13 +66,17 @@ impl WasmCodegen {
         self.line("(import \"string\" \"toString\" (func $to_string (param i32) (result i32 i32)))");
 
         // Import DOM manipulation functions from JS runtime
-        self.line("(import \"dom\" \"createElement\" (func $dom_createElement (param i32 i32) (result i32)))");
-        self.line("(import \"dom\" \"setText\" (func $dom_setText (param i32 i32 i32)))");
-        self.line("(import \"dom\" \"appendChild\" (func $dom_appendChild (param i32 i32)))");
+        // mount/flush architecture: initial render via innerHTML, updates via batched command buffer
+        self.line("(import \"dom\" \"mount\" (func $dom_mount (param i32 i32 i32)))");
+        self.line("(import \"dom\" \"hydrateRefs\" (func $dom_hydrateRefs (param i32) (result i32)))");
+        self.line("(import \"dom\" \"flush\" (func $dom_flush (param i32 i32)))");
+        self.line("(import \"dom\" \"getElementById\" (func $dom_getElementById (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"querySelector\" (func $dom_querySelector (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"getBody\" (func $dom_getBody (result i32)))");
+        self.line("(import \"dom\" \"getHead\" (func $dom_getHead (result i32)))");
+        self.line("(import \"dom\" \"getRoot\" (func $dom_getRoot (result i32)))");
         self.line("(import \"dom\" \"addEventListener\" (func $dom_addEventListener (param i32 i32 i32 i32)))");
-        self.line("(import \"dom\" \"setAttribute\" (func $dom_setAttribute (param i32 i32 i32 i32)))");
-        self.line("(import \"dom\" \"setProperty\" (func $dom_setProperty (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"dom\" \"getProperty\" (func $dom_getProperty (param i32 i32 i32) (result i32 i32)))");
+        self.line("(import \"dom\" \"removeEventListener\" (func $dom_removeEventListener (param i32 i32 i32 i32)))");
 
         // Import signal runtime
         self.line("(import \"signal\" \"create\" (func $signal_create (param i32) (result i32)))");

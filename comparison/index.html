@@ -258,7 +258,7 @@
 <!-- Hero -->
 <div class="hero">
   <h1>
-    <span class="react">React</span><span class="vs">vs</span><span class="nectar">Arc</span>
+    <span class="react">React</span><span class="vs">vs</span><span class="nectar">Nectar</span>
   </h1>
   <p>The same apps, built two ways. See how Nectar's ownership model, fine-grained signals, and WebAssembly compilation compare to React's virtual DOM and JavaScript runtime.</p>
 </div>
@@ -270,11 +270,11 @@
     <div class="label">React runtime (gzip)</div>
   </div>
   <div class="stat nectar-stat">
-    <div class="value">3.8 KB</div>
+    <div class="value">2.8 KB</div>
     <div class="label">Nectar runtime (gzip)</div>
   </div>
   <div class="stat neutral">
-    <div class="value">11x</div>
+    <div class="value">15x</div>
     <div class="label">Smaller bundle</div>
   </div>
   <div class="stat react-stat">
@@ -334,7 +334,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>counter.nectar — Arc</span>
+        <span>counter.nectar — Nectar</span>
         <span class="loc">17 lines</span>
       </div>
 <pre>
@@ -457,7 +457,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>todo.nectar — Arc</span>
+        <span>todo.nectar — Nectar</span>
         <span class="loc">46 lines</span>
       </div>
 <pre>
@@ -583,7 +583,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>auth.nectar — Arc</span>
+        <span>auth.nectar — Nectar</span>
         <span class="loc">32 lines, one file</span>
       </div>
 <pre>
@@ -689,7 +689,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>posts.nectar — Arc</span>
+        <span>posts.nectar — Nectar</span>
         <span class="loc">25 lines</span>
       </div>
 <pre>
@@ -808,7 +808,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>weather_agent.nectar — Arc</span>
+        <span>weather_agent.nectar — Nectar</span>
         <span class="loc">28 lines</span>
       </div>
 <pre>
@@ -900,7 +900,7 @@
     <!-- Nectar -->
     <div class="code-panel nectar">
       <div class="code-panel-header">
-        <span>app.nectar — Arc</span>
+        <span>app.nectar — Nectar</span>
         <span class="loc">16 lines, zero deps</span>
       </div>
 <pre>
@@ -1077,15 +1077,17 @@
   Signal notifies subscribers    <span class="ann">&lt;-- O(1) lookup</span>
      |
      v
-  WASM calls dom_set_text()      <span class="ann">&lt;-- direct FFI</span>
+  WASM writes SET_TEXT opcode    <span class="ann">&lt;-- into command buffer</span>
+     |
+     v
+  Single flush() call            <span class="ann">&lt;-- 1 boundary crossing</span>
      |
      v
   One DOM node updated           <span class="ann">&lt;-- done</span>
 
 
-
-
-  <span class="ann">No VDOM. No diff. No GC. No JS.</span>
+  <span class="ann">No VDOM. No diff. No GC.</span>
+  <span class="ann">mount() for initial render, flush() for updates.</span>
 </pre>
     </div>
   </div>
