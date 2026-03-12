@@ -875,6 +875,126 @@ impl TypeChecker {
             self.structs.insert("SearchIndex".to_string(), StructInfo { fields: search_idx_fields });
         }
 
+        // Register theme namespace functions
+        {
+            self.fn_sigs.insert("theme::init".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("theme::toggle".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("theme::set".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("theme::current".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
+        // Register auth namespace functions
+        {
+            self.fn_sigs.insert("auth::init".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("auth::login".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("auth::logout".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("auth::get_user".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::Error), // opaque user object
+            });
+            self.fn_sigs.insert("auth::is_authenticated".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::Bool),
+            });
+        }
+
+        // Register upload namespace functions
+        {
+            self.fn_sigs.insert("upload::init".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("upload::start".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("upload::cancel".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+        }
+
+        // Register db namespace functions
+        {
+            self.fn_sigs.insert("db::open".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("db::put".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::Error], // key, value (generic)
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("db::get".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Error), // generic value
+            });
+            self.fn_sigs.insert("db::delete".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("db::query".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Array(Box::new(Ty::Error))),
+            });
+        }
+
+        // Register animate namespace functions
+        {
+            self.fn_sigs.insert("animate::spring".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::Error], // target, config
+                ret: Box::new(Ty::String_), // animation ID
+            });
+            self.fn_sigs.insert("animate::keyframes".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::Error, Ty::F64], // target, keyframes, duration
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("animate::stagger".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::Error, Ty::F64], // targets, config, delay
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("animate::cancel".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+        }
+
+        // Register responsive namespace functions
+        {
+            self.fn_sigs.insert("responsive::register_breakpoints".to_string(), Ty::Function {
+                params: vec![Ty::Error], // breakpoints config (generic)
+                ret: Box::new(Ty::Unit),
+            });
+            self.fn_sigs.insert("responsive::get_breakpoint".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("responsive::fluid".to_string(), Ty::Function {
+                params: vec![Ty::F64, Ty::F64],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
         for item in &program.items {
             match item {
                 Item::Struct(s) => {

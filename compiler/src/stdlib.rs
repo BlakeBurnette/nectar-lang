@@ -92,6 +92,12 @@ impl StdLib {
         stdlib.register_url_functions();
         stdlib.register_mask_functions();
         stdlib.register_search_functions();
+        stdlib.register_theme_functions();
+        stdlib.register_auth_functions();
+        stdlib.register_upload_functions();
+        stdlib.register_db_functions();
+        stdlib.register_animate_functions();
+        stdlib.register_responsive_functions();
 
         stdlib
     }
@@ -1520,6 +1526,257 @@ impl StdLib {
                 return_type: any_array.clone(),
                 takes_self: false, self_mutable: false,
                 description: "Search index with query, returns ranked results. Pure WASM.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_theme_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let unit_ty = Type::Named("unit".into());
+
+        let fns = vec![
+            BuiltinFn {
+                name: "theme_init".into(),
+                params: vec![BuiltinParam { name: "config".into(), ty: string_ty.clone() }],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Initialize the theme system with a configuration. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "theme_toggle".into(),
+                params: vec![],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Toggle between light and dark themes. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "theme_set".into(),
+                params: vec![BuiltinParam { name: "name".into(), ty: string_ty.clone() }],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Set the active theme by name. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "theme_current".into(),
+                params: vec![],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Get the name of the currently active theme. JS runtime bridge.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_auth_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let bool_ty = Type::Named("bool".into());
+        let unit_ty = Type::Named("unit".into());
+        let any_ty = Type::Named("Any".into());
+
+        let fns = vec![
+            BuiltinFn {
+                name: "auth_init".into(),
+                params: vec![BuiltinParam { name: "config".into(), ty: string_ty.clone() }],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Initialize the auth system with provider configuration. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "auth_login".into(),
+                params: vec![
+                    BuiltinParam { name: "username".into(), ty: string_ty.clone() },
+                    BuiltinParam { name: "password".into(), ty: string_ty.clone() },
+                ],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Authenticate a user with username and password. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "auth_logout".into(),
+                params: vec![],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Log out the current user. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "auth_get_user".into(),
+                params: vec![],
+                return_type: any_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Get the currently authenticated user object. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "auth_is_authenticated".into(),
+                params: vec![],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Check whether a user is currently authenticated. JS runtime bridge.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_upload_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let bool_ty = Type::Named("bool".into());
+        let unit_ty = Type::Named("unit".into());
+
+        let fns = vec![
+            BuiltinFn {
+                name: "upload_init".into(),
+                params: vec![BuiltinParam { name: "config".into(), ty: string_ty.clone() }],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Initialize the upload system with endpoint configuration. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "upload_start".into(),
+                params: vec![BuiltinParam { name: "file_ref".into(), ty: string_ty.clone() }],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Start uploading a file. Returns upload ID. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "upload_cancel".into(),
+                params: vec![BuiltinParam { name: "upload_id".into(), ty: string_ty.clone() }],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Cancel an in-progress upload by ID. JS runtime bridge.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_db_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let bool_ty = Type::Named("bool".into());
+        let any_ty = Type::Named("Any".into());
+        let any_array = Type::Array(Box::new(any_ty.clone()));
+
+        let fns = vec![
+            BuiltinFn {
+                name: "db_open".into(),
+                params: vec![BuiltinParam { name: "name".into(), ty: string_ty.clone() }],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Open or create a client-side database. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "db_put".into(),
+                params: vec![
+                    BuiltinParam { name: "key".into(), ty: string_ty.clone() },
+                    BuiltinParam { name: "value".into(), ty: any_ty.clone() },
+                ],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Store a value by key in the database. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "db_get".into(),
+                params: vec![BuiltinParam { name: "key".into(), ty: string_ty.clone() }],
+                return_type: any_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Retrieve a value by key from the database. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "db_delete".into(),
+                params: vec![BuiltinParam { name: "key".into(), ty: string_ty.clone() }],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Delete a value by key from the database. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "db_query".into(),
+                params: vec![BuiltinParam { name: "query".into(), ty: string_ty.clone() }],
+                return_type: any_array.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Query the database with a filter expression. JS runtime bridge.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_animate_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let f64_ty = Type::Named("f64".into());
+        let bool_ty = Type::Named("bool".into());
+        let any_ty = Type::Named("Any".into());
+
+        let fns = vec![
+            BuiltinFn {
+                name: "animate_spring".into(),
+                params: vec![
+                    BuiltinParam { name: "target".into(), ty: string_ty.clone() },
+                    BuiltinParam { name: "config".into(), ty: any_ty.clone() },
+                ],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Start a spring animation. Returns animation ID. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "animate_keyframes".into(),
+                params: vec![
+                    BuiltinParam { name: "target".into(), ty: string_ty.clone() },
+                    BuiltinParam { name: "keyframes".into(), ty: any_ty.clone() },
+                    BuiltinParam { name: "duration".into(), ty: f64_ty.clone() },
+                ],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Start a keyframes animation. Returns animation ID. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "animate_stagger".into(),
+                params: vec![
+                    BuiltinParam { name: "targets".into(), ty: string_ty.clone() },
+                    BuiltinParam { name: "config".into(), ty: any_ty.clone() },
+                    BuiltinParam { name: "delay".into(), ty: f64_ty.clone() },
+                ],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Start a staggered animation across multiple targets. Returns animation ID. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "animate_cancel".into(),
+                params: vec![BuiltinParam { name: "animation_id".into(), ty: string_ty.clone() }],
+                return_type: bool_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Cancel a running animation by ID. JS runtime bridge.".into(),
+            },
+        ];
+        for f in fns { self.register_fn(f); }
+    }
+
+    fn register_responsive_functions(&mut self) {
+        let string_ty = Type::Named("String".into());
+        let f64_ty = Type::Named("f64".into());
+        let unit_ty = Type::Named("unit".into());
+        let any_ty = Type::Named("Any".into());
+
+        let fns = vec![
+            BuiltinFn {
+                name: "responsive_register_breakpoints".into(),
+                params: vec![BuiltinParam { name: "breakpoints".into(), ty: any_ty.clone() }],
+                return_type: unit_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Register named breakpoints for responsive design. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "responsive_get_breakpoint".into(),
+                params: vec![],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Get the name of the currently active breakpoint. JS runtime bridge.".into(),
+            },
+            BuiltinFn {
+                name: "responsive_fluid".into(),
+                params: vec![
+                    BuiltinParam { name: "min_value".into(), ty: f64_ty.clone() },
+                    BuiltinParam { name: "max_value".into(), ty: f64_ty.clone() },
+                ],
+                return_type: string_ty.clone(),
+                takes_self: false, self_mutable: false,
+                description: "Generate a fluid CSS value that scales between min and max. JS runtime bridge.".into(),
             },
         ];
         for f in fns { self.register_fn(f); }

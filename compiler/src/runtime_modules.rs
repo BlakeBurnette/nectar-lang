@@ -188,6 +188,12 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
                         "format" => { modules.insert("intl".to_string()); }
                         "toast" => { /* uses core DOM syscalls, no extra JS */ }
                         "skeleton" => { /* uses core DOM syscalls, no extra JS */ }
+                        "theme" => { modules.insert("theme".to_string()); }
+                        "auth" => { modules.insert("auth".to_string()); }
+                        "upload" => { modules.insert("upload".to_string()); }
+                        "db" => { modules.insert("db".to_string()); }
+                        "animate" => { modules.insert("animate".to_string()); }
+                        "responsive" => { modules.insert("responsive".to_string()); }
                         _ => {} // collections, url, mask, search, pagination = pure WASM
                     }
                 }
