@@ -66,6 +66,12 @@ fn eliminate_in_item(item: &mut Item, stats: &mut DceStats) {
                 eliminate_in_block(&mut tool.body, stats);
             }
         }
+        Item::Page(page) => {
+            for method in &mut page.methods {
+                eliminate_in_block(&mut method.body, stats);
+                remove_unused_locals_in_block(&mut method.body, stats);
+            }
+        }
         _ => {}
     }
 }

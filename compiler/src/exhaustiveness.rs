@@ -583,6 +583,7 @@ fn walk_item(item: &Item, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
         Item::Test(t) => walk_block(&t.body, enums, errors),
             Item::Contract(_) => {}
             Item::App(_) => {}
+            Item::Page(_) => {}
         Item::Struct(_) | Item::Enum(_) | Item::Use(_) | Item::Router(_)
         | Item::LazyComponent(_) | Item::Trait(_) | Item::Mod(_) => {}
     }

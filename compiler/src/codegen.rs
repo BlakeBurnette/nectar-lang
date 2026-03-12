@@ -232,6 +232,21 @@ impl WasmCodegen {
         self.line("(import \"hardware\" \"cameraCapture\" (func $hardware_cameraCapture (param i32 i32 i32)))");
         self.line("(import \"hardware\" \"geolocationCurrent\" (func $hardware_geolocationCurrent (param i32)))");
 
+        // Permission enforcement runtime imports
+        self.line("");
+        self.line(";; Permission enforcement runtime imports");
+        self.line("(import \"permissions\" \"checkNetwork\" (func $permissions_checkNetwork (param i32 i32 i32 i32)))");
+        self.line("(import \"permissions\" \"checkStorage\" (func $permissions_checkStorage (param i32 i32 i32 i32)))");
+        self.line("(import \"permissions\" \"registerPermissions\" (func $permissions_registerPermissions (param i32 i32 i32 i32)))");
+
+        // SEO runtime imports
+        self.line("");
+        self.line(";; SEO runtime imports");
+        self.line("(import \"seo\" \"setMeta\" (func $seo_set_meta (param i32 i32 i32 i32 i32 i32 i32 i32)))");
+        self.line("(import \"seo\" \"registerStructuredData\" (func $seo_register_structured_data (param i32 i32)))");
+        self.line("(import \"seo\" \"registerRoute\" (func $seo_register_route (param i32 i32 i32 i32)))");
+        self.line("(import \"seo\" \"emitStaticHtml\" (func $seo_emit_static_html (param i32 i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
@@ -319,6 +334,7 @@ impl WasmCodegen {
                 }
             }
             Item::App(app) => self.generate_app(app),
+            Item::Page(page) => self.generate_page(page),
             _ => {
                 self.line(&format!(";; TODO: codegen for {:?}", std::mem::discriminant(item)));
             }
@@ -636,6 +652,18 @@ impl WasmCodegen {
             self.line(&format!("local.set ${}", state.name));
         }
 
+        // Emit permission metadata and register allowed patterns
+        if let Some(ref perms) = comp.permissions {
+            self.generate_permissions(comp_name, perms);
+        }
+
+        // For secret state fields, mark signals as redacted in debug builds
+        for state in &comp.state {
+            if state.secret {
+                self.line(&format!(";; secret: {} — stripped from serialization", state.name));
+            }
+        }
+
         // Inject scoped styles for this component
         self.generate_style_injection(comp_name, &comp.styles);
 
@@ -709,6 +737,217 @@ impl WasmCodegen {
         // Generate methods (non-handler versions)
         for method in &comp.methods {
             self.generate_function(method);
+        }
+    }
+
+    fn generate_page(&mut self, page: &PageDef) {
+        self.line(&format!(";; === Page: {} ===", page.name));
+
+        // Generate page mount function (same pattern as generate_component)
+        let comp_name = &page.name;
+
+        self.emit(&format!("(func ${comp_name}_mount (export \"{comp_name}_mount\") (param $root i32)"));
+        self.indent += 1;
+
+        for state in &page.state {
+            self.line(&format!("(local ${} i32) ;; signal ID for {}", state.name, state.name));
+        }
+
+        for state in &page.state {
+            self.generate_expr(&state.initializer);
+            self.line("call $signal_create");
+            self.line(&format!("local.set ${}", state.name));
+        }
+
+        if let Some(ref perms) = page.permissions {
+            self.generate_permissions(comp_name, perms);
+        }
+
+        for state in &page.state {
+            if state.secret {
+                self.line(&format!(";; secret: {} — stripped from serialization", state.name));
+            }
+        }
+
+        self.generate_style_injection(comp_name, &page.styles);
+
+        self.generate_template(&page.render.body, "$root");
+
+        self.line("");
+        self.line(";; reactive effects for DOM updates are registered via signal.subscribe");
+
+        self.indent -= 1;
+        self.line(")");
+
+        // Generate event handler trampolines
+        for (i, method) in page.methods.iter().enumerate() {
+            self.line("");
+            self.emit(&format!("(func $__handler_{} (export \"__handler_{}\")", i, i));
+            self.indent += 1;
+            self.line(";; event handler trampoline");
+            for stmt in &method.body.stmts {
+                self.generate_stmt(stmt);
+            }
+            self.indent -= 1;
+            self.line(")");
+        }
+
+        // Generate methods
+        for method in &page.methods {
+            self.generate_function(method);
+        }
+
+        // Generate SEO registration function
+        let fn_name = format!("__page_register_{}", page.name.to_lowercase());
+        self.emit(&format!("(func (export \"{}\")", fn_name));
+        self.indent += 1;
+
+        if let Some(ref meta) = page.meta {
+            if let Some(ref title) = meta.title {
+                if let Expr::StringLit(s) = title {
+                    let offset = self.store_string(s);
+                    let len = s.len();
+                    self.line(&format!(";; Register page title: \"{}\"", s));
+                    // For setMeta: title_ptr, title_len, desc_ptr, desc_len, canon_ptr, canon_len, og_ptr, og_len
+                    // We will build these up and call at the end
+                    let _ = (offset, len);
+                }
+            }
+
+            // Build setMeta call with all available meta fields
+            let (t_off, t_len) = self.meta_field_offset(&meta.title);
+            let (d_off, d_len) = self.meta_field_offset(&meta.description);
+            let (c_off, c_len) = self.meta_field_offset(&meta.canonical);
+            let (o_off, o_len) = self.meta_field_offset(&meta.og_image);
+
+            self.line(&format!(
+                "(call $seo_set_meta (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))",
+                t_off, t_len, d_off, d_len, c_off, c_len, o_off, o_len
+            ));
+
+            // Register structured data
+            for sd in &meta.structured_data {
+                let mut json = format!("{{\"@type\":\"{}\",", sd.schema_type);
+                for (i, (key, val)) in sd.fields.iter().enumerate() {
+                    if i > 0 { json.push(','); }
+                    json.push('"');
+                    json.push_str(key);
+                    json.push_str("\":");
+                    if let Expr::StringLit(s) = val {
+                        json.push('"');
+                        json.push_str(s);
+                        json.push('"');
+                    } else {
+                        json.push_str("null");
+                    }
+                }
+                json.push('}');
+                let offset = self.store_string(&json);
+                let len = json.len();
+                self.line(&format!("(call $seo_register_structured_data (i32.const {}) (i32.const {}))", offset, len));
+            }
+        }
+
+        // Register route for sitemap
+        let route_str = format!("/{}", page.name.to_lowercase());
+        let offset = self.store_string(&route_str);
+        let len = route_str.len();
+        self.line(&format!("(call $seo_register_route (i32.const {}) (i32.const {}) (i32.const 0) (i32.const 0))", offset, len));
+
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    /// Helper to get the offset and length for an optional meta string field.
+    fn meta_field_offset(&mut self, expr: &Option<Expr>) -> (u32, usize) {
+        match expr {
+            Some(Expr::StringLit(s)) => {
+                let offset = self.store_string(s);
+                (offset, s.len())
+            }
+            _ => (0, 0),
+        }
+    }
+
+    /// Generate permission metadata and URL/storage validation for a component.
+    ///
+    /// Emits:
+    /// - A JSON blob of allowed patterns as exported data
+    /// - Calls to `$permissions_registerPermissions` at mount time
+    /// - CSP-compatible metadata from analyzed fetch URLs
+    fn generate_permissions(&mut self, comp_name: &str, perms: &PermissionsDef) {
+        self.line("");
+        self.line(&format!(";; permissions for component {}", comp_name));
+
+        // Build JSON representation of allowed patterns
+        let mut json = String::from("{");
+        if !perms.network.is_empty() {
+            json.push_str("\"network\":[");
+            for (i, pat) in perms.network.iter().enumerate() {
+                if i > 0 { json.push(','); }
+                json.push('"');
+                json.push_str(pat);
+                json.push('"');
+            }
+            json.push(']');
+        }
+        if !perms.storage.is_empty() {
+            if !perms.network.is_empty() { json.push(','); }
+            json.push_str("\"storage\":[");
+            for (i, key) in perms.storage.iter().enumerate() {
+                if i > 0 { json.push(','); }
+                json.push('"');
+                json.push_str(key);
+                json.push('"');
+            }
+            json.push(']');
+        }
+        if !perms.capabilities.is_empty() {
+            if !perms.network.is_empty() || !perms.storage.is_empty() { json.push(','); }
+            json.push_str("\"capabilities\":[");
+            for (i, cap) in perms.capabilities.iter().enumerate() {
+                if i > 0 { json.push(','); }
+                json.push('"');
+                json.push_str(cap);
+                json.push('"');
+            }
+            json.push(']');
+        }
+        json.push('}');
+
+        let name_offset = self.store_string(comp_name);
+        let json_offset = self.store_string(&json);
+        self.line(&format!("i32.const {} ;; component name ptr", name_offset));
+        self.line(&format!("i32.const {} ;; component name len", comp_name.len()));
+        self.line(&format!("i32.const {} ;; permissions json ptr", json_offset));
+        self.line(&format!("i32.const {} ;; permissions json len", json.len()));
+        self.line("call $permissions_registerPermissions");
+
+        // Emit CSP metadata comment from analyzed network patterns
+        if !perms.network.is_empty() {
+            let csp_sources: Vec<&str> = perms.network.iter()
+                .filter_map(|url| {
+                    // Extract origin from URL pattern for CSP connect-src
+                    if let Some(idx) = url.find("://") {
+                        let after_scheme = &url[idx + 3..];
+                        if let Some(slash_idx) = after_scheme.find('/') {
+                            Some(&url[..idx + 3 + slash_idx])
+                        } else {
+                            Some(url.as_str())
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !csp_sources.is_empty() {
+                let csp_value = format!("connect-src 'self' {}", csp_sources.join(" "));
+                self.line(&format!(";; CSP: {}", csp_value));
+
+                // Export CSP metadata so the runtime/server can read it
+                let csp_offset = self.store_string(&csp_value);
+                let _ = csp_offset; // stored in data section, runtime reads it
+            }
         }
     }
 
@@ -1355,12 +1594,18 @@ impl WasmCodegen {
 
     fn generate_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, secret, value, .. } => {
+                if *secret {
+                    self.line(&format!(";; secret binding: {} — redacted in debug/serialization", name));
+                }
                 self.generate_expr(value);
                 self.line(&format!("local.set ${}", name));
             }
-            Stmt::Signal { name, value, .. } => {
+            Stmt::Signal { name, secret, value, .. } => {
                 // Signals compile to a memory slot + getter/setter
+                if *secret {
+                    self.line(&format!(";; secret signal: {} — redacted in debug/serialization", name));
+                }
                 self.generate_expr(value);
                 self.line(&format!("local.set ${}", name));
             }

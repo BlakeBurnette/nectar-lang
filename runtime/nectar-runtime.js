@@ -2219,6 +2219,22 @@ class NectarRuntime {
           return this.writeString(headerVal);
         },
       },
+
+      // --- SEO runtime — meta tags, structured data, sitemap ---
+      seo: {
+        setMeta: (titlePtr, titleLen, descPtr, descLen, canonPtr, canonLen, ogPtr, ogLen) => {
+          SeoRuntime.setMeta.call(SeoRuntime, this, titlePtr, titleLen, descPtr, descLen, canonPtr, canonLen, ogPtr, ogLen);
+        },
+        registerStructuredData: (jsonPtr, jsonLen) => {
+          SeoRuntime.registerStructuredData.call(SeoRuntime, this, jsonPtr, jsonLen);
+        },
+        registerRoute: (pathPtr, pathLen, priorityPtr, priorityLen) => {
+          SeoRuntime.registerRoute.call(SeoRuntime, this, pathPtr, pathLen, priorityPtr, priorityLen);
+        },
+        emitStaticHtml: (componentPtr, componentLen) => {
+          SeoRuntime.emitStaticHtml.call(SeoRuntime, this, componentPtr, componentLen);
+        },
+      },
     };
 
     // Auto-register contracts after WASM init — see post-init section below
@@ -2257,6 +2273,13 @@ class NectarRuntime {
     const allExports = Object.keys(instance.exports);
     for (const name of allExports) {
       if (name.startsWith("__contract_register_")) {
+        instance.exports[name]();
+      }
+    }
+
+    // Register pages — call __page_register_* exports
+    for (const name of allExports) {
+      if (name.startsWith("__page_register_")) {
         instance.exports[name]();
       }
     }
@@ -2501,6 +2524,84 @@ const PwaRuntime = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// SEO Runtime
+// ---------------------------------------------------------------------------
+
+const SeoRuntime = {
+  _pages: new Map(),
+  _meta: new Map(),
+  _structuredData: [],
+  _routes: [],
+
+  setMeta(runtime, titlePtr, titleLen, descPtr, descLen, canonPtr, canonLen, ogPtr, ogLen) {
+    const title = titleLen > 0 ? runtime.readString(titlePtr, titleLen) : null;
+    const desc = descLen > 0 ? runtime.readString(descPtr, descLen) : null;
+    const canon = canonLen > 0 ? runtime.readString(canonPtr, canonLen) : null;
+    const og = ogLen > 0 ? runtime.readString(ogPtr, ogLen) : null;
+
+    // Update document head
+    if (typeof document !== "undefined") {
+      if (title) document.title = title;
+      if (desc) {
+        let el = document.querySelector('meta[name="description"]');
+        if (!el) { el = document.createElement('meta'); el.name = 'description'; document.head.appendChild(el); }
+        el.content = desc;
+      }
+      if (canon) {
+        let el = document.querySelector('link[rel="canonical"]');
+        if (!el) { el = document.createElement('link'); el.rel = 'canonical'; document.head.appendChild(el); }
+        el.href = canon;
+      }
+      if (og) {
+        let el = document.querySelector('meta[property="og:image"]');
+        if (!el) { el = document.createElement('meta'); el.setAttribute('property', 'og:image'); document.head.appendChild(el); }
+        el.content = og;
+      }
+    }
+  },
+
+  registerStructuredData(runtime, jsonPtr, jsonLen) {
+    const json = runtime.readString(jsonPtr, jsonLen);
+    SeoRuntime._structuredData.push(JSON.parse(json));
+    // Inject JSON-LD into head
+    if (typeof document !== "undefined") {
+      const script = document.createElement('script');
+      script.type = 'application/ld+json';
+      script.textContent = json;
+      document.head.appendChild(script);
+    }
+  },
+
+  registerRoute(runtime, pathPtr, pathLen, priorityPtr, priorityLen) {
+    const path = runtime.readString(pathPtr, pathLen);
+    const priority = priorityLen > 0 ? runtime.readString(priorityPtr, priorityLen) : '0.8';
+    SeoRuntime._routes.push({ path, priority, lastmod: new Date().toISOString().split('T')[0] });
+  },
+
+  emitStaticHtml(runtime, componentPtr, componentLen) {
+    // Used during SSG build — captures rendered HTML for static output
+    const name = runtime.readString(componentPtr, componentLen);
+    if (typeof document !== "undefined") {
+      const html = document.documentElement.outerHTML;
+      SeoRuntime._pages.set(name, html);
+    }
+  },
+
+  // Generate sitemap XML from registered routes
+  generateSitemap(baseUrl) {
+    const urls = SeoRuntime._routes.map(r =>
+      `  <url>\n    <loc>${baseUrl}${r.path}</loc>\n    <lastmod>${r.lastmod}</lastmod>\n    <priority>${r.priority}</priority>\n  </url>`
+    ).join('\n');
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`;
+  },
+
+  // Generate robots.txt
+  generateRobots(baseUrl) {
+    return `User-agent: *\nAllow: /\n\nSitemap: ${baseUrl}/sitemap.xml`;
+  }
+};
+
 // Export for use
 if (typeof module !== "undefined") {
   module.exports = {
@@ -2513,12 +2614,112 @@ if (typeof module !== "undefined") {
     GestureRuntime,
     HardwareRuntime,
     PwaRuntime,
+    SeoRuntime,
     createEffect,
     createMemo,
     batch,
     hashString,
   };
 }
+// ---------------------------------------------------------------------------
+// Permission enforcement runtime
+// ---------------------------------------------------------------------------
+
+class PermissionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PermissionError";
+  }
+}
+
+const PermissionsRuntime = {
+  /** Per-component permission registrations: component name -> { network: [...], storage: [...] } */
+  _registry: new Map(),
+
+  /**
+   * Register permissions for a component.
+   * Called by WASM at component mount time.
+   */
+  registerPermissions(componentName, permissionsJson) {
+    try {
+      const perms = JSON.parse(permissionsJson);
+      this._registry.set(componentName, perms);
+    } catch (e) {
+      console.warn(`[nectar] Failed to parse permissions for ${componentName}:`, e);
+    }
+  },
+
+  /**
+   * Check if a URL is allowed by the component's declared network permissions.
+   * Called before every fetch in a permissioned component.
+   * @param {string} url - The URL being fetched
+   * @param {string[]} allowedPatterns - Glob-like URL patterns from the permissions block
+   * @throws {PermissionError} if the URL does not match any allowed pattern
+   */
+  checkNetwork(url, allowedPatterns) {
+    if (!allowedPatterns || allowedPatterns.length === 0) return;
+    const matched = allowedPatterns.some((pattern) => this._matchPattern(url, pattern));
+    if (!matched) {
+      throw new PermissionError(
+        `Network access denied: "${url}" does not match any allowed pattern: [${allowedPatterns.join(", ")}]`
+      );
+    }
+  },
+
+  /**
+   * Check if a storage key is allowed by the component's declared storage permissions.
+   * Called before storage access in a permissioned component.
+   * @param {string} key - The storage key being accessed
+   * @param {string[]} allowedKeys - Key patterns from the permissions block
+   * @throws {PermissionError} if the key does not match any allowed pattern
+   */
+  checkStorage(key, allowedKeys) {
+    if (!allowedKeys || allowedKeys.length === 0) return;
+    const matched = allowedKeys.some((pattern) => this._matchPattern(key, pattern));
+    if (!matched) {
+      throw new PermissionError(
+        `Storage access denied: "${key}" does not match any allowed key: [${allowedKeys.join(", ")}]`
+      );
+    }
+  },
+
+  /**
+   * Generate a Content-Security-Policy header value from all registered permissions.
+   * @returns {string} CSP header value
+   */
+  generateCSP() {
+    const connectSources = new Set(["'self'"]);
+    for (const [, perms] of this._registry) {
+      if (perms.network) {
+        for (const pattern of perms.network) {
+          // Extract origin from URL pattern for CSP connect-src
+          try {
+            const url = new URL(pattern.replace(/\*/g, "placeholder"));
+            connectSources.add(url.origin);
+          } catch {
+            // If not a valid URL, add as-is (could be a domain pattern)
+            connectSources.add(pattern.replace(/\/\*$/, ""));
+          }
+        }
+      }
+    }
+    return `connect-src ${[...connectSources].join(" ")}`;
+  },
+
+  /**
+   * Simple glob-style pattern matching.
+   * Supports `*` as a wildcard segment.
+   */
+  _matchPattern(value, pattern) {
+    // Convert glob pattern to regex
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
+    const regex = new RegExp(`^${escaped}$`);
+    return regex.test(value);
+  },
+};
+
 if (typeof window !== "undefined") {
   window.NectarRuntime = NectarRuntime;
   window.AgentManager = AgentManager;
@@ -2526,6 +2727,8 @@ if (typeof window !== "undefined") {
   window.GestureRuntime = GestureRuntime;
   window.HardwareRuntime = HardwareRuntime;
   window.PwaRuntime = PwaRuntime;
+  window.PermissionsRuntime = PermissionsRuntime;
+  window.PermissionError = PermissionError;
   window.createEffect = createEffect;
   window.createMemo = createMemo;
   window.batch = batch;

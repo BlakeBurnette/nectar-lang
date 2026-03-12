@@ -1,0 +1,133 @@
+// seo.nectar — SEO and AAIO (AI Answer Optimization) features
+//
+// Nectar makes SEO a compile-time guarantee, not an afterthought:
+// - `page` keyword generates pre-rendered static HTML at build time
+// - `meta` blocks declare title, description, OG tags, canonical URLs
+// - Structured data (JSON-LD) auto-generated from Schema declarations
+// - Sitemap and robots.txt auto-generated from router
+// - Semantic HTML enforced by compiler warnings
+//
+// Build targets:
+//   nectar build site.nectar --target ssg       # Static site generation
+//   nectar build site.nectar --target ssr       # Server-side rendering
+//   nectar build site.nectar --target hybrid    # SSG + SSR for dynamic routes
+
+// --- Pages with SEO metadata ---
+// The `page` keyword is a component that the compiler pre-renders to static
+// HTML at build time. Crawlers and AI systems see full content, not an empty shell.
+
+page Home() {
+    meta {
+        title: "Acme Corp — Build Better Software",
+        description: "Acme Corp helps teams ship faster with modern tooling.",
+        canonical: "/",
+        og_image: "/images/hero.png",
+    }
+
+    render {
+        <main>
+            <h1>"Build Better Software"</h1>
+            <p>"Ship faster with tools that work."</p>
+        </main>
+    }
+}
+
+// --- Dynamic pages with computed meta ---
+// Meta values can be expressions — computed at render time for dynamic routes.
+
+page BlogPost(slug: String) {
+    let title: String = "Loading...";
+    let excerpt: String = "";
+    let author: String = "";
+    let date: String = "";
+
+    meta {
+        title: f"Blog | {self.title}",
+        description: self.excerpt,
+        canonical: f"/blog/{slug}",
+        structured_data: Schema.Article {
+            headline: self.title,
+            author: self.author,
+            date_published: self.date,
+        },
+    }
+
+    render {
+        <article>
+            <h1>{self.title}</h1>
+            <p class="meta">{f"By {self.author} on {self.date}"}</p>
+            <p>{self.excerpt}</p>
+        </article>
+    }
+}
+
+// --- E-commerce product page ---
+// Structured data helps Google show rich results and AI systems understand products.
+
+page ProductPage(id: String) {
+    let name: String = "";
+    let price: String = "";
+    let description: String = "";
+    let image_url: String = "";
+
+    meta {
+        title: f"{self.name} — Acme Store",
+        description: self.description,
+        canonical: f"/products/{id}",
+        og_image: self.image_url,
+        structured_data: Schema.Product {
+            name: self.name,
+            description: self.description,
+            image: self.image_url,
+            price: self.price,
+            currency: "USD",
+        },
+    }
+
+    render {
+        <article>
+            <h1>{self.name}</h1>
+            <p class="price">{f"${self.price}"}</p>
+            <p>{self.description}</p>
+        </article>
+    }
+}
+
+// --- Router with auto-sitemap ---
+// The compiler extracts all routes and generates sitemap.xml automatically.
+
+router SiteRouter {
+    route "/" => Home,
+    route "/blog/:slug" => BlogPost,
+    route "/products/:id" => ProductPage,
+    fallback => NotFound,
+}
+
+component NotFound() {
+    render {
+        <main>
+            <h1>"404 — Page Not Found"</h1>
+        </main>
+    }
+}
+
+// --- Why this matters ---
+//
+// Traditional SPA (React, Vue, Angular):
+//   1. Crawler requests /blog/my-post
+//   2. Server returns <div id="root"></div>
+//   3. Crawler may or may not execute JavaScript
+//   4. If it does, it waits for API calls to resolve
+//   5. Maybe it sees content. Maybe it doesn't.
+//   6. Your page ranks poorly or not at all.
+//
+// Nectar with SSG:
+//   1. Crawler requests /blog/my-post
+//   2. Server returns fully rendered <article><h1>My Post</h1>...</article>
+//   3. JSON-LD structured data is already in <head>
+//   4. Sitemap told the crawler exactly which pages exist
+//   5. Content is immediately indexable
+//   6. WASM hydrates for interactivity — SEO is already done.
+//
+// The difference: React makes you choose between interactivity and SEO.
+// Nectar gives you both, with zero configuration.

@@ -41,6 +41,8 @@ pub enum Item {
     Contract(ContractDef),
     /// PWA app definition — root-level application with manifest, offline support, push
     App(AppDef),
+    /// Page definition — a component with SEO metadata
+    Page(PageDef),
 }
 
 /// Contract definition — an API boundary type that generates:
@@ -99,6 +101,42 @@ pub struct OfflineDef {
 pub struct PushDef {
     pub vapid_key: Option<Expr>,
     pub on_message: Option<String>,  // handler function name
+    pub span: Span,
+}
+
+/// Page definition — a component with SEO metadata (title, description, structured data, etc.)
+#[derive(Debug)]
+pub struct PageDef {
+    pub name: String,
+    pub props: Vec<Param>,
+    pub meta: Option<MetaDef>,
+    pub state: Vec<StateField>,
+    pub methods: Vec<Function>,
+    pub styles: Vec<StyleBlock>,
+    pub render: RenderBlock,
+    pub permissions: Option<PermissionsDef>,
+    pub gestures: Vec<GestureDef>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// SEO metadata block within a page definition
+#[derive(Debug)]
+pub struct MetaDef {
+    pub title: Option<Expr>,
+    pub description: Option<Expr>,
+    pub canonical: Option<Expr>,
+    pub og_image: Option<Expr>,
+    pub structured_data: Vec<StructuredDataDef>,
+    pub extra: Vec<(String, Expr)>,  // arbitrary meta key-value pairs
+    pub span: Span,
+}
+
+/// Structured data definition (JSON-LD) within a meta block
+#[derive(Debug)]
+pub struct StructuredDataDef {
+    pub schema_type: String,   // e.g. "Article", "Organization", "Product"
+    pub fields: Vec<(String, Expr)>,
     pub span: Span,
 }
 

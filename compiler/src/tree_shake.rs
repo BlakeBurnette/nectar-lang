@@ -75,7 +75,7 @@ pub fn shake(program: &mut Program, entry_points: &[String], stats: &mut ShakeSt
 
     // Also keep Use items (imports) and Test items always.
     for (i, item) in program.items.iter().enumerate() {
-        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_)) {
+        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_) | Item::Page(_)) {
             // Always keep these
             reachable.insert(i);
         }
@@ -123,6 +123,7 @@ fn item_name(item: &Item) -> Option<String> {
         Item::Contract(c) => Some(c.name.clone()),
         Item::App(a) => Some(a.name.clone()),
         Item::Trait(t) => Some(t.name.clone()),
+        Item::Page(p) => Some(p.name.clone()),
         Item::Mod(m) => Some(m.name.clone()),
     }
 }
@@ -136,6 +137,7 @@ fn is_entry_point(item: &Item) -> bool {
         Item::Store(s) => s.is_pub,
         Item::Agent(_) => true,
         Item::LazyComponent(_) => true,
+        Item::Page(_) => true,         // pages are entry points
         _ => false,
     }
 }
@@ -216,6 +218,15 @@ fn collect_item_deps(item: &Item, deps: &mut HashSet<String>) {
                 collect_block_deps(&method.body, deps);
             }
             collect_template_deps(&l.component.render.body, deps);
+        }
+        Item::Page(page) => {
+            for state in &page.state {
+                collect_expr_deps(&state.initializer, deps);
+            }
+            for method in &page.methods {
+                collect_block_deps(&method.body, deps);
+            }
+            collect_template_deps(&page.render.body, deps);
         }
         Item::Use(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}

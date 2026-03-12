@@ -223,6 +223,7 @@ impl Substitution {
                 lifetime: lifetime.clone(),
                 inner: Box::new(self.resolve(inner)),
             },
+            Ty::Secret(inner) => Ty::Secret(Box::new(self.resolve(inner))),
             _ => ty.clone(),
         }
     }
@@ -822,6 +823,17 @@ impl TypeChecker {
                     }
                 }
                 Item::App(_) => { /* app type checking TODO */ }
+                Item::Page(page) => {
+                    // Type check page like a component
+                    for method in &page.methods {
+                        let prev = self.type_params_in_scope.clone();
+                        for tp in &method.type_params {
+                            self.type_params_in_scope.insert(tp.clone());
+                        }
+                        self.check_function(method, &mut env);
+                        self.type_params_in_scope = prev;
+                    }
+                }
             }
         }
 
@@ -952,19 +964,85 @@ impl TypeChecker {
         // State fields.
         for state in &comp.state {
             let init_ty = self.infer_expr(&state.initializer, &mut comp_env);
-            let ty = if let Some(ast_ty) = &state.ty {
+            let base_ty = if let Some(ast_ty) = &state.ty {
                 let declared = self.ast_type_to_ty(ast_ty);
                 self.unify(&declared, &init_ty, comp.span);
                 declared
             } else {
                 init_ty
             };
+            let ty = if state.secret {
+                Ty::Secret(Box::new(base_ty))
+            } else {
+                base_ty
+            };
             comp_env.insert(state.name.clone(), ty);
         }
+
+        // Check render block for secret safety — secret values must not appear
+        // in template expressions.
+        self.check_template_secret_safety(&comp.render.body, &comp_env, comp.span);
 
         // Methods.
         for method in &comp.methods {
             self.check_function(method, &mut comp_env);
+        }
+    }
+
+    /// Recursively check that no secret-typed variable is used in a template expression.
+    fn check_template_secret_safety(&mut self, node: &TemplateNode, env: &TypeEnv, span: Span) {
+        match node {
+            TemplateNode::Expression(expr) => {
+                self.check_expr_not_secret(expr, env, span);
+            }
+            TemplateNode::Element(el) => {
+                for child in &el.children {
+                    self.check_template_secret_safety(child, env, span);
+                }
+                for attr in &el.attributes {
+                    match attr {
+                        Attribute::Dynamic { value, .. } => {
+                            self.check_expr_not_secret(value, env, span);
+                        }
+                        Attribute::Aria { value, .. } => {
+                            self.check_expr_not_secret(value, env, span);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            TemplateNode::Fragment(nodes) => {
+                for child in nodes {
+                    self.check_template_secret_safety(child, env, span);
+                }
+            }
+            TemplateNode::Link { children, .. } => {
+                for child in children {
+                    self.check_template_secret_safety(child, env, span);
+                }
+            }
+            TemplateNode::TextLiteral(_) => {}
+        }
+    }
+
+    /// Check that an expression does not resolve to a secret type.
+    fn check_expr_not_secret(&mut self, expr: &Expr, env: &TypeEnv, span: Span) {
+        if let Expr::Ident(name) = expr {
+            if let Some(ty) = env.lookup(name) {
+                if matches!(ty, Ty::Secret(_)) {
+                    self.error(
+                        format!("cannot render secret value '{}' to DOM", name),
+                        span,
+                    );
+                }
+            }
+        }
+        if let Expr::FormatString { parts } = expr {
+            for part in parts {
+                if let FormatPart::Expression(inner) = part {
+                    self.check_expr_not_secret(inner, env, span);
+                }
+            }
         }
     }
 

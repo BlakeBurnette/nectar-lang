@@ -67,6 +67,14 @@ fn fold_item(item: &mut Item, stats: &mut FoldStats) {
                 fold_block(&mut tool.body, stats);
             }
         }
+        Item::Page(page) => {
+            for method in &mut page.methods {
+                fold_function(method, stats);
+            }
+            for state in &mut page.state {
+                fold_expr(&mut state.initializer, stats);
+            }
+        }
         Item::Struct(_) | Item::Enum(_) | Item::Use(_)
         | Item::Router(_) | Item::LazyComponent(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}

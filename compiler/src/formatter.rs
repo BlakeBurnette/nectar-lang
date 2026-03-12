@@ -126,6 +126,16 @@ impl Formatter {
             }
             Item::Test(t) => self.format_test(t),
             Item::Contract(_) => {}
+            Item::Page(page) => {
+                self.push_indent();
+                if page.is_pub { self.push("pub "); }
+                self.push(&format!("page {} {{\n", page.name));
+                self.indent += 1;
+                // Minimal formatting — body details omitted
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
             Item::App(app) => {
                 self.push_indent();
                 if app.is_pub { self.push("pub "); }
@@ -607,6 +617,9 @@ impl Formatter {
     fn format_state_field(&mut self, s: &StateField) {
         self.push_indent();
         self.push("signal ");
+        if s.secret {
+            self.push("secret ");
+        }
         if s.mutable {
             self.push("mut ");
         }
@@ -660,11 +673,14 @@ impl Formatter {
 
     fn format_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, ty, mutable, value, .. } => {
+            Stmt::Let { name, ty, mutable, secret, value, .. } => {
                 self.push_indent();
                 self.push("let ");
                 if *mutable {
                     self.push("mut ");
+                }
+                if *secret {
+                    self.push("secret ");
                 }
                 self.push(name);
                 if let Some(t) = ty {
@@ -675,9 +691,12 @@ impl Formatter {
                 self.push(&self.format_expr_to_string(value));
                 self.push(";\n");
             }
-            Stmt::Signal { name, ty, value, .. } => {
+            Stmt::Signal { name, ty, secret, value, .. } => {
                 self.push_indent();
                 self.push("signal ");
+                if *secret {
+                    self.push("secret ");
+                }
                 self.push(name);
                 if let Some(t) = ty {
                     self.push(": ");
@@ -992,9 +1011,10 @@ impl Formatter {
 
     fn format_stmt_to_string(&self, stmt: &Stmt, depth: usize) -> String {
         match stmt {
-            Stmt::Let { name, ty, mutable, value, .. } => {
+            Stmt::Let { name, ty, mutable, secret, value, .. } => {
                 let mut s = "let ".to_string();
                 if *mutable { s.push_str("mut "); }
+                if *secret { s.push_str("secret "); }
                 s.push_str(name);
                 if let Some(t) = ty {
                     s.push_str(": ");
@@ -1005,8 +1025,9 @@ impl Formatter {
                 s.push(';');
                 s
             }
-            Stmt::Signal { name, ty, value, .. } => {
+            Stmt::Signal { name, ty, secret, value, .. } => {
                 let mut s = "signal ".to_string();
+                if *secret { s.push_str("secret "); }
                 s.push_str(name);
                 if let Some(t) = ty {
                     s.push_str(": ");

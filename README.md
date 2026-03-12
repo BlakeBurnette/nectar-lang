@@ -25,6 +25,7 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | API safety | Manual | Types erased at runtime | Contracts — compile-time + runtime + wire-level |
 | Security | Manual / opt-in | `dangerouslySetInnerHTML` exists | XSS impossible, `secret` types, capability permissions |
 | Mobile/PWA | Library (Workbox, etc.) | Library | First-class (`app`, `offline`, `gesture`, `haptic`) |
+| SEO/AAIO | N/A | Requires Next.js + manual setup | Built-in (`page`, `meta`, auto sitemap/JSON-LD) |
 | Supply chain | npm (1000s of deps) | npm (1000s of deps) | Zero JS dependencies — flat WASM binary |
 | Bundle size | N/A | 40-150 KB runtime | ~0 KB runtime overhead |
 
@@ -661,6 +662,92 @@ nectar build app.nectar --target twa          # Android Trusted Web Activity (Pl
 nectar build app.nectar --target capacitor    # iOS/Android native wrapper (App Store)
 ```
 
+### SEO & AAIO (AI Answer Optimization)
+
+Single Page Applications are invisible to search engines and AI systems by default. Nectar makes SEO a **compile-time guarantee**.
+
+#### The SPA Problem
+
+Traditional SPAs serve an empty HTML shell. Crawlers -- both search engines and AI systems (ChatGPT Browse, Perplexity, Google SGE) -- see nothing:
+
+```html
+<!-- What a React SPA serves to crawlers -->
+<html><body><div id="root"></div><script src="bundle.js"></script></body></html>
+```
+
+Next.js and Nuxt bolt on SSR/SSG as afterthoughts, requiring a Node.js server, complex configuration, and hydration mismatch bugs.
+
+#### The `page` Keyword
+
+Nectar's `page` keyword declares a component that the compiler **pre-renders to static HTML at build time**:
+
+```nectar
+page BlogPost(slug: String) {
+    meta {
+        title: f"Blog | {self.title}",
+        description: self.excerpt,
+        canonical: f"/blog/{slug}",
+        structured_data: Schema.Article {
+            headline: self.title,
+            author: self.author,
+            date_published: self.date,
+        },
+    }
+
+    render {
+        <article>
+            <h1>{self.title}</h1>
+            <p>{self.excerpt}</p>
+        </article>
+    }
+}
+```
+
+#### What the Compiler Generates
+
+From a `page` definition and a `router`, the Nectar compiler automatically produces:
+
+| Artifact | Source | Manual in React? |
+|---|---|---|
+| Pre-rendered HTML | `page` + `render` block | Requires Next.js + config |
+| `<title>` and meta tags | `meta` block | Manual `<Head>` per page |
+| Open Graph tags | `meta { og_image }` | Manual per page |
+| JSON-LD structured data | `meta { structured_data }` | Manual JSON strings |
+| `sitemap.xml` | `router` routes | Requires `next-sitemap` plugin |
+| `robots.txt` | Auto-generated | Manual file |
+| Canonical URLs | `meta { canonical }` | Manual per page |
+
+#### Semantic HTML Enforcement
+
+The compiler warns when you use non-semantic HTML where semantic elements are appropriate:
+
+```
+warning[semantic_html]: <div> used as page wrapper — consider <main>, <article>, or <section>
+  --> src/pages/blog.nectar:12:9
+   |
+12 |         <div class="post">
+   |         ^^^^ non-semantic element
+   |
+   = help: semantic HTML improves SEO ranking and AI content extraction
+```
+
+#### Build Targets
+
+```bash
+nectar build site.nectar --target ssg       # Static — pre-render all routes at build time
+nectar build site.nectar --target ssr       # Server — WASM renders on edge/server per request
+nectar build site.nectar --target hybrid    # Static for known routes, SSR for dynamic
+```
+
+#### AAIO: AI Answer Optimization
+
+AI systems (ChatGPT, Perplexity, Claude, Google SGE) extract answers from web content. Nectar optimizes for this automatically:
+
+- **Structured data**: JSON-LD generated from `Schema.*` declarations tells AI systems exactly what your content represents
+- **Semantic HTML**: `<article>`, `<main>`, `<section>` help AI systems understand content hierarchy
+- **Clean DOM**: No framework wrapper divs -- WASM renders minimal, semantic markup
+- **Pre-rendered content**: AI crawlers see full content without executing JavaScript
+
 ### String Interpolation
 
 ```nectar
@@ -1055,6 +1142,9 @@ Build for different deployment targets.
 nectar build app.nectar --target pwa          # PWA with manifest + service worker
 nectar build app.nectar --target twa          # Android Trusted Web Activity wrapper
 nectar build app.nectar --target capacitor    # iOS/Android native wrapper
+nectar build app.nectar --target ssg          # Static site generation — pre-render all routes
+nectar build app.nectar --target ssr          # Server-side rendering — WASM on edge/server
+nectar build app.nectar --target hybrid       # SSG for known routes, SSR for dynamic routes
 nectar build app.nectar --emit-csp            # Emit Content-Security-Policy header
 ```
 
@@ -1063,6 +1153,9 @@ nectar build app.nectar --emit-csp            # Emit Content-Security-Policy hea
 | `--target pwa` | Generate `manifest.webmanifest`, service worker, app shell HTML |
 | `--target twa` | Generate Android TWA wrapper for Google Play Store distribution |
 | `--target capacitor` | Generate Capacitor project for iOS App Store / Google Play |
+| `--target ssg` | Static site generation -- pre-render all `page` routes to HTML at build time |
+| `--target ssr` | Server-side rendering -- WASM renders pages on edge/server per request |
+| `--target hybrid` | SSG for known routes, SSR for dynamic routes (combines both strategies) |
 | `--emit-csp` | Analyze all resource URLs and emit a tight Content-Security-Policy |
 
 ### `nectar export-contracts`
@@ -1202,6 +1295,7 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`contracts.nectar`](examples/contracts.nectar) | API boundary contracts -- compile-time field checking, runtime validation, content hashing |
 | [`security.nectar`](examples/security.nectar) | Security features -- `secret` types, `permissions` blocks, capability enforcement |
 | [`pwa-app.nectar`](examples/pwa-app.nectar) | Progressive Web App -- `app` manifest, offline caching, gestures, hardware access |
+| [`seo.nectar`](examples/seo.nectar) | SEO & AAIO -- `page` keyword, `meta` blocks, structured data, auto sitemap, semantic HTML |
 
 Compile any example:
 
@@ -1256,6 +1350,7 @@ nectar-lang/
     app.nectar
     api.nectar
     ai-chat.nectar
+    seo.nectar
 ```
 
 ### How to contribute

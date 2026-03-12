@@ -85,6 +85,11 @@ pub enum TokenKind {
     Where,
     Secret,
     Permissions,
+    Page,
+    Meta,
+    Sitemap,
+    Schema,
+    Canonical,
 
     // Types
     I32,

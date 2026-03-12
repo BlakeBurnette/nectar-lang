@@ -92,6 +92,7 @@ impl Parser {
                         | TokenKind::Trait
                         | TokenKind::Contract
                         | TokenKind::App
+                        | TokenKind::Page
                         | TokenKind::Pub => break,
                         _ => { self.advance(); }
                     }
@@ -168,13 +169,14 @@ impl Parser {
             TokenKind::Router => Ok(Item::Router(self.parse_router()?)),
             TokenKind::Contract => Ok(Item::Contract(self.parse_contract(is_pub)?)),
             TokenKind::App => Ok(Item::App(self.parse_app(is_pub)?)),
+            TokenKind::Page => Ok(Item::Page(self.parse_page(is_pub)?)),
             TokenKind::Lazy => {
                 // lazy component Name { ... }
                 self.advance();
                 Ok(Item::LazyComponent(self.parse_lazy_component()?))
             }
             TokenKind::Test => Ok(Item::Test(self.parse_test_def()?)),
-            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, lazy, test)")),
+            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, lazy, test)")),
         }
     }
 
@@ -344,6 +346,153 @@ impl Parser {
         })?;
 
         Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, span })
+    }
+
+    fn parse_page(&mut self, is_pub: bool) -> Result<PageDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Page)?;
+        let name = self.expect_ident()?;
+
+        // Optional props: page BlogPost(slug: String) { ... }
+        let props = if self.check(&TokenKind::LeftParen) {
+            self.expect(&TokenKind::LeftParen)?;
+            let params = self.parse_params()?;
+            self.expect(&TokenKind::RightParen)?;
+            params
+        } else {
+            vec![]
+        };
+
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut meta = None;
+        let mut state = Vec::new();
+        let mut methods = Vec::new();
+        let mut styles = Vec::new();
+        let mut gestures = Vec::new();
+        let mut render = None;
+        let mut permissions = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Meta => {
+                    self.advance();
+                    meta = Some(self.parse_meta_def()?);
+                }
+                TokenKind::Let => {
+                    state.push(self.parse_state_field()?);
+                }
+                TokenKind::Signal => {
+                    state.push(self.parse_signal_field()?);
+                }
+                TokenKind::Fn => {
+                    methods.push(self.parse_function(false)?);
+                }
+                TokenKind::Style => {
+                    styles.extend(self.parse_style_blocks()?);
+                }
+                TokenKind::Render => {
+                    render = Some(self.parse_render_block()?);
+                }
+                TokenKind::Permissions => {
+                    permissions = Some(self.parse_permissions()?);
+                }
+                TokenKind::Gesture => {
+                    gestures.push(self.parse_gesture()?);
+                }
+                _ => {
+                    return Err(self.error(&format!(
+                        "unexpected token in page: {:?}",
+                        self.peek_kind()
+                    )));
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        let render = render.ok_or_else(|| ParseError {
+            message: format!("Page '{name}' missing render block"),
+            span,
+        })?;
+
+        Ok(PageDef {
+            name,
+            props,
+            meta,
+            state,
+            methods,
+            styles,
+            render,
+            permissions,
+            gestures,
+            is_pub,
+            span,
+        })
+    }
+
+    fn parse_meta_def(&mut self) -> Result<MetaDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut title = None;
+        let mut description = None;
+        let mut canonical = None;
+        let mut og_image = None;
+        let mut structured_data = vec![];
+        let mut extra = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+
+            match key.as_str() {
+                "title" => { title = Some(self.parse_expr()?); }
+                "description" => { description = Some(self.parse_expr()?); }
+                "canonical" => { canonical = Some(self.parse_expr()?); }
+                "og_image" => { og_image = Some(self.parse_expr()?); }
+                "structured_data" => {
+                    structured_data.push(self.parse_structured_data()?);
+                }
+                other => {
+                    let val = self.parse_expr()?;
+                    extra.push((other.to_string(), val));
+                }
+            }
+
+            // Optional comma
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        Ok(MetaDef { title, description, canonical, og_image, structured_data, extra, span })
+    }
+
+    fn parse_structured_data(&mut self) -> Result<StructuredDataDef, ParseError> {
+        let span = self.current_span();
+        // Parse Schema.Article or just Article
+        let schema_type = if self.match_token(&TokenKind::Schema) {
+            self.expect(&TokenKind::Dot)?;
+            self.expect_ident()?
+        } else {
+            self.expect_ident()?
+        };
+
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut fields = vec![];
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let field_name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        Ok(StructuredDataDef { schema_type, fields, span })
     }
 
     /// Parse `permissions { network: [...], storage: [...], capabilities: [...] }`

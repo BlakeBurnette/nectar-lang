@@ -278,6 +278,12 @@ impl Linter {
                 }
                 self.lint_component(&lc.component);
             }
+            Item::Page(page) => {
+                if self.config.pascal_case_types {
+                    self.check_pascal_case(&page.name, page.span, "page");
+                }
+                self.lint_page(page);
+            }
             _ => {}
         }
     }
@@ -306,6 +312,87 @@ impl Linter {
                 self.check_snake_case(&m.name, m.span, "method");
             }
             self.lint_function_body(m);
+        }
+    }
+
+    fn lint_page(&mut self, page: &PageDef) {
+        for m in &page.methods {
+            if self.config.snake_case_functions {
+                self.check_snake_case(&m.name, m.span, "method");
+            }
+            self.lint_function_body(m);
+        }
+        // Semantic HTML linting for page render blocks
+        self.lint_semantic_html(&page.render.body, page.span, true);
+    }
+
+    /// Check the render template tree for semantic HTML issues.
+    /// `is_page` indicates whether this is a page component (triggers h1 check).
+    fn lint_semantic_html(&mut self, node: &TemplateNode, span: Span, is_page: bool) {
+        let mut has_h1 = false;
+        self.walk_template_for_semantics(node, &mut has_h1, true);
+
+        if is_page && !has_h1 {
+            self.warn(
+                "semantic_html",
+                "page component should contain an <h1> element for SEO".to_string(),
+                span,
+                Severity::Warning,
+            );
+        }
+    }
+
+    fn walk_template_for_semantics(&mut self, node: &TemplateNode, has_h1: &mut bool, is_top_level: bool) {
+        match node {
+            TemplateNode::Element(el) => {
+                if el.tag == "h1" {
+                    *has_h1 = true;
+                }
+
+                // Warn if <div> is used as a top-level wrapper when semantic tags would be better
+                if is_top_level && el.tag == "div" {
+                    self.warn(
+                        "semantic_html",
+                        "consider using <main>, <article>, <section>, or <nav> instead of <div> as a top-level wrapper".to_string(),
+                        el.span,
+                        Severity::Warning,
+                    );
+                }
+
+                // Warn if <img> has no alt attribute
+                if el.tag == "img" {
+                    let has_alt = el.attributes.iter().any(|attr| {
+                        match attr {
+                            Attribute::Static { name, .. } => name == "alt",
+                            Attribute::Dynamic { name, .. } => name == "alt",
+                            _ => false,
+                        }
+                    });
+                    if !has_alt {
+                        self.warn(
+                            "semantic_html",
+                            "<img> element should have an `alt` attribute for accessibility and SEO".to_string(),
+                            el.span,
+                            Severity::Warning,
+                        );
+                    }
+                }
+
+                for child in &el.children {
+                    self.walk_template_for_semantics(child, has_h1, false);
+                }
+            }
+            TemplateNode::Fragment(children) => {
+                for child in children {
+                    self.walk_template_for_semantics(child, has_h1, is_top_level);
+                }
+            }
+            TemplateNode::Link { children, .. } => {
+                for child in children {
+                    self.walk_template_for_semantics(child, has_h1, false);
+                }
+            }
+            _ => {}
         }
     }
 
