@@ -60,157 +60,52 @@ impl WasmCodegen {
         // String runtime — WASM-internal (emitted by emit_string_runtime)
         // concat, fromI32, fromF64, fromBool, toString all run in WASM linear memory.
 
-        // Import DOM manipulation functions from JS runtime
-        // mount/flush architecture: initial render via innerHTML, updates via batched command buffer
+        // ── DOM — mount/flush + element queries + absorbed functions ─────────
         self.line("(import \"dom\" \"mount\" (func $dom_mount (param i32 i32 i32)))");
         self.line("(import \"dom\" \"hydrateRefs\" (func $dom_hydrateRefs (param i32) (result i32)))");
         self.line("(import \"dom\" \"flush\" (func $dom_flush (param i32 i32)))");
         self.line("(import \"dom\" \"getElementById\" (func $dom_getElementById (param i32 i32) (result i32)))");
         self.line("(import \"dom\" \"querySelector\" (func $dom_querySelector (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"createElement\" (func $dom_createElement (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"createTextNode\" (func $dom_createTextNode (param i32 i32) (result i32)))");
         self.line("(import \"dom\" \"getBody\" (func $dom_getBody (result i32)))");
         self.line("(import \"dom\" \"getHead\" (func $dom_getHead (result i32)))");
         self.line("(import \"dom\" \"getRoot\" (func $dom_getRoot (result i32)))");
+        self.line("(import \"dom\" \"getDocumentElement\" (func $dom_getDocumentElement (result i32)))");
         self.line("(import \"dom\" \"addEventListener\" (func $dom_addEventListener (param i32 i32 i32 i32)))");
         self.line("(import \"dom\" \"removeEventListener\" (func $dom_removeEventListener (param i32 i32 i32 i32)))");
-
-        // Signal runtime — pure WASM internal (no JS bridge needed)
-        // Signals are reactive primitives: create/get/set with automatic dependency tracking.
-        // The signal graph lives entirely in WASM linear memory.
-
-        // ── JS bridge imports — ONLY for browser APIs WASM cannot call ──────
-        // Every import below matches a function in core.js wasmImports.
-        // If it's not a browser API, it belongs in WASM (emit_*_runtime methods).
-
-        // HTTP (fetch is a browser API)
-        self.line("");
-        self.line(";; HTTP — browser fetch API");
-        self.line("(import \"http\" \"fetch\" (func $http_fetch (param i32 i32 i32 i32) (result i32)))");
-
-        // Worker (Web Workers + MessageChannel are browser APIs)
-        self.line("");
-        self.line(";; Workers — browser Web Worker API");
-        self.line("(import \"worker\" \"spawn\" (func $worker_spawn (param i32) (result i32)))");
-        self.line("(import \"worker\" \"channelCreate\" (func $worker_channelCreate (result i32)))");
-        self.line("(import \"worker\" \"channelSend\" (func $worker_channelSend (param i32 i32 i32)))");
-        self.line("(import \"worker\" \"channelRecv\" (func $worker_channelRecv (param i32 i32)))");
-        self.line("(import \"worker\" \"postMessage\" (func $worker_postMessage (param i32 i32 i32)))");
-        self.line("(import \"worker\" \"onMessage\" (func $worker_onMessage (param i32 i32)))");
-        self.line("(import \"worker\" \"terminate\" (func $worker_terminate (param i32)))");
-
-        // WebSocket (browser API — replaces old "channel" namespace)
-        self.line("");
-        self.line(";; WebSocket — browser WebSocket API");
-        self.line("(import \"ws\" \"connect\" (func $ws_connect (param i32 i32) (result i32)))");
-        self.line("(import \"ws\" \"send\" (func $ws_send (param i32 i32 i32)))");
-        self.line("(import \"ws\" \"sendBinary\" (func $ws_sendBinary (param i32 i32 i32)))");
-        self.line("(import \"ws\" \"close\" (func $ws_close (param i32)))");
-        self.line("(import \"ws\" \"onOpen\" (func $ws_onOpen (param i32 i32)))");
-        self.line("(import \"ws\" \"onMessage\" (func $ws_onMessage (param i32 i32)))");
-        self.line("(import \"ws\" \"onClose\" (func $ws_onClose (param i32 i32)))");
-        self.line("(import \"ws\" \"onError\" (func $ws_onError (param i32 i32)))");
-        self.line("(import \"ws\" \"getReadyState\" (func $ws_getReadyState (param i32) (result i32)))");
-
-        // Payment (external script loading + iframe postMessage — browser APIs)
-        self.line("");
-        self.line(";; Payment — browser script/iframe/postMessage APIs");
-        self.line("(import \"payment\" \"initProvider\" (func $payment_init (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"payment\" \"createCheckout\" (func $payment_create_checkout (param i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"payment\" \"processPayment\" (func $payment_process (param i32 i32) (result i32)))");
-
-        // Auth (cookies + location.href — browser APIs)
-        self.line("");
-        self.line(";; Auth — browser cookie/navigation APIs");
-        self.line("(import \"auth\" \"login\" (func $auth_login (param i32 i32)))");
-        self.line("(import \"auth\" \"logout\" (func $auth_logout (param i32 i32)))");
-        self.line("(import \"auth\" \"getCookie\" (func $auth_get_cookie (param i32 i32) (result i32)))");
-        self.line("(import \"auth\" \"setCookie\" (func $auth_set_cookie (param i32 i32)))");
-        self.line("(import \"auth\" \"clearCookies\" (func $auth_clear_cookies))");
-
-        // Upload (file input + XHR — browser APIs)
-        self.line("");
-        self.line(";; Upload — browser file input + XHR APIs");
-        self.line("(import \"upload\" \"init\" (func $upload_init (param i32 i32 i32 i32)))");
-        self.line("(import \"upload\" \"start\" (func $upload_start (param i32 i32) (result i32)))");
-        self.line("(import \"upload\" \"cancel\" (func $upload_cancel (param i32)))");
-
-        // AI — WASM-internal for tool registration/parsing (emit_ai_runtime)
-        // Chat streaming uses http.fetch + streaming.streamFetch (browser APIs already imported)
-
-        // Streaming (ReadableStream + EventSource — browser APIs)
-        self.line("");
-        self.line(";; Streaming — browser ReadableStream + EventSource APIs");
-        self.line("(import \"streaming\" \"streamFetch\" (func $streaming_streamFetch (param i32 i32 i32)))");
-        self.line("(import \"streaming\" \"sseConnect\" (func $streaming_sseConnect (param i32 i32 i32)))");
-
-        // Media (Image, link preload — browser APIs)
-        self.line("");
-        self.line(";; Media — browser Image + link preload APIs");
-        self.line("(import \"media\" \"lazyImage\" (func $media_lazyImage (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"media\" \"decodeImage\" (func $media_decodeImage (param i32 i32 i32)))");
-        self.line("(import \"media\" \"preload\" (func $media_preload (param i32 i32 i32 i32)))");
-        self.line("(import \"media\" \"progressiveImage\" (func $media_progressiveImage (param i32 i32 i32 i32 i32)))");
-
-        // Lazy component mounting (dynamic import — browser API)
         self.line("(import \"dom\" \"lazyMount\" (func $dom_lazyMount (param i32 i32 i32 i32)))");
+        self.line("(import \"dom\" \"setTitle\" (func $dom_setTitle (param i32 i32)))");
+        self.line("(import \"dom\" \"getScrollTop\" (func $dom_getScrollTop (param i32) (result f64)))");
+        self.line("(import \"dom\" \"getScrollLeft\" (func $dom_getScrollLeft (param i32) (result f64)))");
+        self.line("(import \"dom\" \"getClientHeight\" (func $dom_getClientHeight (param i32) (result i32)))");
+        self.line("(import \"dom\" \"getClientWidth\" (func $dom_getClientWidth (param i32) (result i32)))");
+        self.line("(import \"dom\" \"getWindowWidth\" (func $dom_getWindowWidth (result i32)))");
+        self.line("(import \"dom\" \"getWindowHeight\" (func $dom_getWindowHeight (result i32)))");
+        self.line("(import \"dom\" \"getOuterHtml\" (func $dom_getOuterHtml (result i32)))");
+        self.line("(import \"dom\" \"setDragData\" (func $dom_setDragData (param i32 i32 i32 i32)))");
+        self.line("(import \"dom\" \"getDragData\" (func $dom_getDragData (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"preventDefault\" (func $dom_preventDefault))");
+        self.line(";; Absorbed from embed/loader/media");
+        self.line("(import \"dom\" \"loadScript\" (func $dom_loadScript (param i32 i32 i32)))");
+        self.line("(import \"dom\" \"loadChunk\" (func $dom_loadChunk (param i32 i32) (result i32)))");
+        self.line("(import \"dom\" \"decodeImage\" (func $dom_decodeImage (param i32 i32 i32)))");
+        self.line("(import \"dom\" \"progressiveImage\" (func $dom_progressiveImage (param i32 i32 i32 i32 i32)))");
 
-        // Router (history.pushState, location — browser APIs)
+        // ── Timer — browser timer APIs ───────────────────────────────────────
         self.line("");
-        self.line(";; Router — browser History + Location APIs");
-        self.line("(import \"router\" \"init\" (func $router_init (param i32 i32)))");
-        self.line("(import \"router\" \"navigate\" (func $router_navigate (param i32 i32)))");
-        self.line("(import \"router\" \"currentPath\" (func $router_currentPath (result i32 i32)))");
-        self.line("(import \"router\" \"getParam\" (func $router_getParam (param i32 i32) (result i32 i32)))");
+        self.line(";; Timer — browser timer APIs");
+        self.line("(import \"timer\" \"setTimeout\" (func $timer_setTimeout (param i32 i32) (result i32)))");
+        self.line("(import \"timer\" \"clearTimeout\" (func $timer_clearTimeout (param i32)))");
+        self.line("(import \"timer\" \"setInterval\" (func $timer_setInterval (param i32 i32) (result i32)))");
+        self.line("(import \"timer\" \"clearInterval\" (func $timer_clearInterval (param i32)))");
+        self.line("(import \"timer\" \"requestAnimationFrame\" (func $timer_requestAnimationFrame (param i32) (result i32)))");
+        self.line("(import \"timer\" \"cancelAnimationFrame\" (func $timer_cancelAnimationFrame (param i32)))");
+        self.line("(import \"timer\" \"now\" (func $timer_now (result f64)))");
 
-        // Style (CSS injection into DOM — browser API)
+        // ── Web API — storage, clipboard, history, console, random, router ──
         self.line("");
-        self.line(";; Style — browser DOM style injection");
-        self.line("(import \"style\" \"injectStyles\" (func $style_injectStyles (param i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"style\" \"applyScope\" (func $style_applyScope (param i32 i32 i32)))");
-
-        // Animation (CSS transitions/keyframes, Web Animations API — browser APIs)
-        self.line("");
-        self.line(";; Animation — browser CSS transition + Web Animations APIs");
-        self.line("(import \"animation\" \"registerTransition\" (func $animation_registerTransition (param i32 i32 i32 i32 i32 i32 i32)))");
-        self.line("(import \"animation\" \"registerKeyframes\" (func $animation_registerKeyframes (param i32 i32 i32 i32)))");
-        self.line("(import \"animation\" \"play\" (func $animation_play (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"animation\" \"pause\" (func $animation_pause (param i32)))");
-        self.line("(import \"animation\" \"cancel\" (func $animation_cancel (param i32)))");
-        self.line("(import \"animation\" \"onFinish\" (func $animation_onFinish (param i32 i32)))");
-
-        // Animate (element.animate Web Animations API — browser API)
-        self.line("");
-        self.line(";; Animate — browser Web Animations API");
-        self.line("(import \"animate\" \"keyframes\" (func $animate_keyframes (param i32 i32 i32 i32)))");
-        self.line("(import \"animate\" \"cancel\" (func $animate_cancel (param i32)))");
-
-        // Shortcuts (keydown addEventListener — browser API)
-        self.line("");
-        self.line(";; Shortcuts — browser keyboard event API");
-        self.line("(import \"shortcuts\" \"register\" (func $shortcut_register (param i32 i32 i32 i32)))");
-
-        // Virtual list (scrollTo — browser API; createList/updateViewport are WASM-internal)
-        self.line("");
-        self.line(";; Virtual list — browser scroll API");
-        self.line("(import \"virtual\" \"scrollTo\" (func $virtual_scroll_to (param i32 i32)))");
-
-        // A11y (setAttribute, focus, live region — browser DOM APIs)
-        self.line("");
-        self.line(";; Accessibility — browser ARIA + focus APIs");
-        self.line("(import \"a11y\" \"setAriaAttribute\" (func $a11y_setAriaAttribute (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"a11y\" \"setRole\" (func $a11y_setRole (param i32 i32 i32)))");
-        self.line("(import \"a11y\" \"manageFocus\" (func $a11y_manageFocus (param i32)))");
-        self.line("(import \"a11y\" \"announceToScreenReader\" (func $a11y_announceToScreenReader (param i32 i32 i32)))");
-        self.line("(import \"a11y\" \"trapFocus\" (func $a11y_trapFocus (param i32)))");
-
-        // Test (console.log/error — browser console API)
-        self.line("");
-        self.line(";; Test — browser console API");
-        self.line("(import \"test\" \"log\" (func $test_log (param i32 i32)))");
-        self.line("(import \"test\" \"error\" (func $test_error (param i32 i32)))");
-
-        // Web API (storage, clipboard, URL, console, timers — browser APIs)
-        self.line("");
-        self.line(";; Web API — browser storage");
+        self.line(";; Web API — storage");
         self.line("(import \"webapi\" \"localStorageGet\" (func $webapi_localStorageGet (param i32 i32) (result i32)))");
         self.line("(import \"webapi\" \"localStorageSet\" (func $webapi_localStorageSet (param i32 i32 i32 i32)))");
         self.line("(import \"webapi\" \"localStorageRemove\" (func $webapi_localStorageRemove (param i32 i32)))");
@@ -223,6 +118,7 @@ impl WasmCodegen {
         self.line("(import \"webapi\" \"getLocationHref\" (func $webapi_getLocationHref (result i32)))");
         self.line("(import \"webapi\" \"getLocationSearch\" (func $webapi_getLocationSearch (result i32)))");
         self.line("(import \"webapi\" \"getLocationHash\" (func $webapi_getLocationHash (result i32)))");
+        self.line("(import \"webapi\" \"getLocationPathname\" (func $webapi_getLocationPathname (result i32)))");
         self.line("(import \"webapi\" \"pushState\" (func $webapi_pushState (param i32 i32)))");
         self.line("(import \"webapi\" \"replaceState\" (func $webapi_replaceState (param i32 i32)))");
         self.line(";; Web API — console");
@@ -231,132 +127,16 @@ impl WasmCodegen {
         self.line("(import \"webapi\" \"consoleError\" (func $webapi_consoleError (param i32 i32)))");
         self.line(";; Web API — misc");
         self.line("(import \"webapi\" \"randomFloat\" (func $webapi_randomFloat (result f64)))");
+        self.line(";; Web API — absorbed from router");
+        self.line("(import \"webapi\" \"onPopState\" (func $webapi_onPopState (param i32)))");
+        self.line("(import \"webapi\" \"getSearchParam\" (func $webapi_getSearchParam (param i32 i32) (result i32)))");
 
-        // WASM-internal: contract, permissions, form, lifecycle, cache, flags, responsive
-        // These are emitted by emit_*_runtime methods, no JS imports needed.
-
-        // PWA (serviceWorker.register, PushManager — browser APIs)
+        // ── HTTP — browser fetch API ─────────────────────────────────────────
         self.line("");
-        self.line(";; PWA — browser Service Worker + Push APIs");
-        self.line("(import \"pwa\" \"registerManifest\" (func $pwa_registerManifest (param i32 i32)))");
-        self.line("(import \"pwa\" \"cachePrecache\" (func $pwa_cachePrecache (param i32 i32)))");
-        self.line("(import \"pwa\" \"registerPush\" (func $pwa_registerPush (param i32 i32)))");
-        self.line("(import \"pwa\" \"registerServiceWorker\" (func $pwa_registerServiceWorker (param i32 i32 i32)))");
+        self.line(";; HTTP — browser fetch API");
+        self.line("(import \"http\" \"fetch\" (func $http_fetch (param i32 i32 i32 i32) (result i32)))");
 
-        // Gesture (long press uses setTimeout — browser API; swipe/pinch math is WASM-internal)
-        self.line("");
-        self.line(";; Gesture — browser pointer event API (math is WASM-internal)");
-        self.line("(import \"gesture\" \"registerLongPress\" (func $gesture_registerLongPress (param i32 i32 i32)))");
-
-        // Hardware (vibrate, credentials, mediaDevices, geolocation — browser APIs)
-        self.line("");
-        self.line(";; Hardware — browser device APIs");
-        self.line("(import \"hardware\" \"haptic\" (func $hardware_haptic (param i32)))");
-        self.line("(import \"hardware\" \"biometricAuth\" (func $hardware_biometricAuth (param i32 i32 i32 i32)))");
-        self.line("(import \"hardware\" \"cameraCapture\" (func $hardware_cameraCapture (param i32 i32 i32)))");
-        self.line("(import \"hardware\" \"geolocationCurrent\" (func $hardware_geolocationCurrent (param i32)))");
-
-        // SEO (document.head meta/script manipulation — browser DOM API)
-        self.line("");
-        self.line(";; SEO — browser document.head API");
-        self.line("(import \"seo\" \"setMeta\" (func $seo_set_meta (param i32 i32 i32 i32 i32 i32 i32 i32)))");
-        self.line("(import \"seo\" \"registerStructuredData\" (func $seo_register_structured_data (param i32 i32)))");
-        self.line("(import \"seo\" \"emitStaticHtml\" (func $seo_emit_static_html (param i32 i32)))");
-
-        // Loader (dynamic script/link insertion — browser DOM API)
-        self.line("");
-        self.line(";; Loader — browser dynamic script loading");
-        self.line("(import \"loader\" \"loadChunk\" (func $load_chunk (param i32 i32) (result i32)))");
-        self.line("(import \"loader\" \"preloadChunk\" (func $preload_chunk (param i32 i32)))");
-
-        // Atomic state (SharedArrayBuffer Atomics — browser API)
-        self.line("");
-        self.line(";; Atomic state — browser Atomics API");
-        self.line("(import \"state\" \"atomicGet\" (func $state_atomic_get (param i32) (result i32)))");
-        self.line("(import \"state\" \"atomicSet\" (func $state_atomic_set (param i32 i32)))");
-        self.line("(import \"state\" \"atomicCompareSwap\" (func $state_atomic_cas (param i32 i32 i32) (result i32)))");
-
-        // Embed (external script/iframe loading — browser DOM API)
-        self.line("");
-        self.line(";; Embed — browser script/iframe loading");
-        self.line("(import \"embed\" \"loadScript\" (func $embed_load_script (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"embed\" \"loadSandboxed\" (func $embed_load_sandboxed (param i32 i32 i32 i32)))");
-
-        // Time (Intl.DateTimeFormat, Date — browser APIs)
-        self.line("");
-        self.line(";; Time — browser Intl + Date APIs");
-        self.line("(import \"time\" \"now\" (func $time_now (result f64)))");
-        self.line("(import \"time\" \"format\" (func $time_format (param f64 i32 i32) (result i32)))");
-        self.line("(import \"time\" \"getTimezoneOffset\" (func $time_getTimezoneOffset (result i32)))");
-        self.line("(import \"time\" \"formatDate\" (func $time_formatDate (param f64 i32 i32 i32 i32) (result i32)))");
-
-        // PDF (iframe + window.print — browser APIs)
-        self.line("");
-        self.line(";; PDF — browser iframe + print APIs");
-        self.line("(import \"pdf\" \"create\" (func $pdf_create (param i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"pdf\" \"render\" (func $pdf_render (param i32 i32)))");
-
-        // IO (Blob + URL.createObjectURL — browser APIs)
-        self.line("");
-        self.line(";; IO — browser Blob/URL APIs");
-        self.line("(import \"io\" \"download\" (func $io_download (param i32 i32 i32 i32)))");
-
-        // Env (window.__env — browser API)
-        self.line("");
-        self.line(";; Env — browser window.__env access");
-        self.line("(import \"env\" \"get\" (func $env_get (param i32 i32) (result i32)))");
-
-        // IndexedDB (browser API)
-        self.line("");
-        self.line(";; Database — browser IndexedDB API");
-        self.line("(import \"db\" \"open\" (func $db_open (param i32 i32 i32) (result i32)))");
-        self.line("(import \"db\" \"put\" (func $db_put (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"db\" \"get\" (func $db_get (param i32 i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"db\" \"delete\" (func $db_delete (param i32 i32 i32 i32 i32)))");
-        self.line("(import \"db\" \"query\" (func $db_query (param i32 i32 i32) (result i32)))");
-
-        // Trace (performance.mark/measure — browser Performance API)
-        self.line("");
-        self.line(";; Trace — browser Performance API");
-        self.line("(import \"trace\" \"start\" (func $trace_start (param i32 i32) (result i32)))");
-        self.line("(import \"trace\" \"end\" (func $trace_end (param i32)))");
-        self.line("(import \"trace\" \"error\" (func $trace_error (param i32 i32 i32)))");
-
-        // Clipboard (navigator.clipboard — browser API)
-        self.line("");
-        self.line(";; Clipboard — browser navigator.clipboard API");
-        self.line("(import \"clipboard\" \"copy\" (func $clipboard_copy (param i32 i32) (result i32)))");
-        self.line("(import \"clipboard\" \"paste\" (func $clipboard_paste (param i32)))");
-        self.line("(import \"clipboard\" \"copyImage\" (func $clipboard_copy_image (param i32 i32) (result i32)))");
-
-        // DnD (drag events + dataTransfer — browser APIs)
-        self.line("");
-        self.line(";; DnD — browser drag event + dataTransfer APIs");
-        self.line("(import \"dnd\" \"makeDraggable\" (func $dnd_make_draggable (param i32 i32 i32 i32)))");
-        self.line("(import \"dnd\" \"makeDroppable\" (func $dnd_make_droppable (param i32 i32 i32 i32)))");
-        self.line("(import \"dnd\" \"getData\" (func $dnd_get_data (result i32)))");
-
-        // Theme (localStorage + matchMedia + data-theme attribute — browser APIs)
-        self.line("");
-        self.line(";; Theme — browser localStorage + matchMedia + DOM attribute APIs");
-        self.line("(import \"theme\" \"getAttribute\" (func $theme_getAttribute (result i32)))");
-        self.line("(import \"theme\" \"setAttribute\" (func $theme_setAttribute (param i32 i32)))");
-        self.line("(import \"theme\" \"storageGet\" (func $theme_storageGet (result i32)))");
-        self.line("(import \"theme\" \"storageSet\" (func $theme_storageSet (param i32 i32)))");
-        self.line("(import \"theme\" \"prefersDark\" (func $theme_prefersDark (result i32)))");
-
-        // Timer (setTimeout, setInterval, rAF — browser APIs)
-        self.line("");
-        self.line(";; Timer — browser timer APIs");
-        self.line("(import \"timer\" \"setTimeout\" (func $timer_setTimeout (param i32 i32) (result i32)))");
-        self.line("(import \"timer\" \"clearTimeout\" (func $timer_clearTimeout (param i32)))");
-        self.line("(import \"timer\" \"setInterval\" (func $timer_setInterval (param i32 i32) (result i32)))");
-        self.line("(import \"timer\" \"clearInterval\" (func $timer_clearInterval (param i32)))");
-        self.line("(import \"timer\" \"requestAnimationFrame\" (func $timer_requestAnimationFrame (param i32) (result i32)))");
-        self.line("(import \"timer\" \"cancelAnimationFrame\" (func $timer_cancelAnimationFrame (param i32)))");
-        self.line("(import \"timer\" \"now\" (func $timer_now (result f64)))");
-
-        // Observe (IntersectionObserver, matchMedia — browser APIs)
+        // ── Observe — IntersectionObserver + matchMedia ──────────────────────
         self.line("");
         self.line(";; Observe — browser IntersectionObserver + matchMedia APIs");
         self.line("(import \"observe\" \"matchMedia\" (func $observe_matchMedia (param i32 i32) (result i32)))");
@@ -365,38 +145,130 @@ impl WasmCodegen {
         self.line("(import \"observe\" \"unobserve\" (func $observe_unobserve (param i32 i32)))");
         self.line("(import \"observe\" \"disconnect\" (func $observe_disconnect (param i32)))");
 
-        // Share (navigator.share — browser API)
+        // ── Share — navigator.share ──────────────────────────────────────────
         self.line("");
         self.line(";; Share — browser navigator.share API");
         self.line("(import \"share\" \"canShare\" (func $share_canShare (result i32)))");
         self.line("(import \"share\" \"nativeShare\" (func $share_nativeShare (param i32 i32 i32 i32 i32 i32)))");
 
-        // Crypto — pure WASM (Rust-compiled, no JS bridge)
+        // ── WebSocket ────────────────────────────────────────────────────────
         self.line("");
-        self.line(";; Crypto — pure WASM (Rust-compiled, no JS bridge)");
-        self.line(";; crypto_sha256, crypto_sha512, crypto_hmac, crypto_encrypt, etc.");
+        self.line(";; WebSocket — browser WebSocket API");
+        self.line("(import \"ws\" \"connect\" (func $ws_connect (param i32 i32) (result i32)))");
+        self.line("(import \"ws\" \"send\" (func $ws_send (param i32 i32 i32)))");
+        self.line("(import \"ws\" \"sendBinary\" (func $ws_sendBinary (param i32 i32 i32)))");
+        self.line("(import \"ws\" \"close\" (func $ws_close (param i32)))");
+        self.line("(import \"ws\" \"onOpen\" (func $ws_onOpen (param i32 i32)))");
+        self.line("(import \"ws\" \"onMessage\" (func $ws_onMessage (param i32 i32)))");
+        self.line("(import \"ws\" \"onClose\" (func $ws_onClose (param i32 i32)))");
+        self.line("(import \"ws\" \"onError\" (func $ws_onError (param i32 i32)))");
+        self.line("(import \"ws\" \"getReadyState\" (func $ws_getReadyState (param i32) (result i32)))");
 
-        // Standard library — pure WASM (compiled from Rust, no JS bridge)
-        // These functions are emitted directly into the WASM binary.
+        // ── IndexedDB ────────────────────────────────────────────────────────
         self.line("");
-        self.line(";; Standard library — pure WASM functions (compiled from Rust)");
-        self.line(";; debounce/throttle use the existing setTimeout syscall");
-        self.line(";; BigDecimal, collections, url, mask, search, pagination — pure computation");
-        self.line(";; No JS imports needed for any of these.");
+        self.line(";; Database — browser IndexedDB API");
+        self.line("(import \"db\" \"open\" (func $db_open (param i32 i32 i32) (result i32)))");
+        self.line("(import \"db\" \"put\" (func $db_put (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"db\" \"get\" (func $db_get (param i32 i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"db\" \"delete\" (func $db_delete (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"db\" \"query\" (func $db_query (param i32 i32 i32) (result i32)))");
 
-        // Toast and skeleton DO need the DOM syscalls (createElement, etc.)
-        // but those are already imported in core. They build on top of core.
+        // ── Workers ──────────────────────────────────────────────────────────
         self.line("");
-        self.line(";; Standard library — UI components (use existing core DOM syscalls)");
-        self.line(";; toast, skeleton — built on createElement/appendChild/setAttribute");
-        self.line(";; These are WASM functions, not JS modules.");
+        self.line(";; Workers — browser Web Worker API");
+        self.line("(import \"worker\" \"spawn\" (func $worker_spawn (param i32) (result i32)))");
+        self.line("(import \"worker\" \"channelCreate\" (func $worker_channelCreate (result i32)))");
+        self.line("(import \"worker\" \"channelSend\" (func $worker_channelSend (param i32 i32 i32)))");
+        self.line("(import \"worker\" \"channelRecv\" (func $worker_channelRecv (param i32 i32)))");
+        self.line("(import \"worker\" \"postMessage\" (func $worker_postMessage (param i32 i32 i32)))");
+        self.line("(import \"worker\" \"onMessage\" (func $worker_onMessage (param i32 i32)))");
+        self.line("(import \"worker\" \"terminate\" (func $worker_terminate (param i32)))");
 
-        // Format — pure WASM (locale tables compiled from Rust, no Intl API)
+        // ── PWA — Service Worker + Push + Cache ──────────────────────────────
         self.line("");
-        self.line(";; Standard library — format (pure WASM, no JS bridge)");
-        self.line(";; format_number, format_currency, format_relative_time, format_compact,");
-        self.line(";; format_percent, format_bytes, format_ordinal");
-        self.line(";; Locale data (decimal separators, currency symbols) compiled into WASM binary.");
+        self.line(";; PWA — browser Service Worker + Push APIs");
+        self.line("(import \"pwa\" \"cachePrecache\" (func $pwa_cachePrecache (param i32 i32)))");
+        self.line("(import \"pwa\" \"registerPush\" (func $pwa_registerPush (param i32 i32)))");
+        self.line("(import \"pwa\" \"registerServiceWorker\" (func $pwa_registerServiceWorker (param i32 i32 i32)))");
+
+        // ── Hardware — device APIs ───────────────────────────────────────────
+        self.line("");
+        self.line(";; Hardware — browser device APIs");
+        self.line("(import \"hardware\" \"haptic\" (func $hardware_haptic (param i32)))");
+        self.line("(import \"hardware\" \"biometricAuth\" (func $hardware_biometricAuth (param i32 i32 i32 i32)))");
+        self.line("(import \"hardware\" \"cameraCapture\" (func $hardware_cameraCapture (param i32 i32 i32)))");
+        self.line("(import \"hardware\" \"geolocationCurrent\" (func $hardware_geolocationCurrent (param i32)))");
+
+        // ── Payment — iframe + postMessage ───────────────────────────────────
+        self.line("");
+        self.line(";; Payment — browser script/iframe/postMessage APIs");
+        self.line("(import \"payment\" \"initProvider\" (func $payment_init (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"payment\" \"createCheckout\" (func $payment_create_checkout (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"payment\" \"processPayment\" (func $payment_process (param i32 i32) (result i32)))");
+
+        // ── Auth — cookies + redirect ────────────────────────────────────────
+        self.line("");
+        self.line(";; Auth — browser cookie/navigation APIs");
+        self.line("(import \"auth\" \"login\" (func $auth_login (param i32 i32)))");
+        self.line("(import \"auth\" \"logout\" (func $auth_logout (param i32 i32)))");
+        self.line("(import \"auth\" \"getCookie\" (func $auth_get_cookie (param i32 i32) (result i32)))");
+        self.line("(import \"auth\" \"setCookie\" (func $auth_set_cookie (param i32 i32)))");
+        self.line("(import \"auth\" \"clearCookies\" (func $auth_clear_cookies))");
+
+        // ── Upload — file picker + XHR ───────────────────────────────────────
+        self.line("");
+        self.line(";; Upload — browser file input + XHR APIs");
+        self.line("(import \"upload\" \"init\" (func $upload_init (param i32 i32 i32 i32)))");
+        self.line("(import \"upload\" \"start\" (func $upload_start (param i32 i32) (result i32)))");
+        self.line("(import \"upload\" \"cancel\" (func $upload_cancel (param i32)))");
+
+        // ── PDF — iframe + print ─────────────────────────────────────────────
+        self.line("");
+        self.line(";; PDF — browser iframe + print APIs");
+        self.line("(import \"pdf\" \"create\" (func $pdf_create (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"pdf\" \"render\" (func $pdf_render (param i32 i32)))");
+
+        // ── IO — Blob download ───────────────────────────────────────────────
+        self.line("");
+        self.line(";; IO — browser Blob/URL APIs");
+        self.line("(import \"io\" \"download\" (func $io_download (param i32 i32 i32 i32)))");
+
+        // ── Time — Intl + Date ───────────────────────────────────────────────
+        self.line("");
+        self.line(";; Time — browser Intl + Date APIs");
+        self.line("(import \"time\" \"now\" (func $time_now (result f64)))");
+        self.line("(import \"time\" \"format\" (func $time_format (param f64 i32 i32) (result i32)))");
+        self.line("(import \"time\" \"getTimezoneOffset\" (func $time_getTimezoneOffset (result i32)))");
+        self.line("(import \"time\" \"formatDate\" (func $time_formatDate (param f64 i32 i32 i32 i32) (result i32)))");
+
+        // ── Perf — performance.mark/measure ──────────────────────────────────
+        self.line("");
+        self.line(";; Perf — browser Performance API");
+        self.line("(import \"perf\" \"mark\" (func $perf_mark (param i32 i32)))");
+        self.line("(import \"perf\" \"measure\" (func $perf_measure (param i32 i32 i32 i32 i32 i32)))");
+
+        // ── Animate — Web Animations API ─────────────────────────────────────
+        self.line("");
+        self.line(";; Animate — browser Web Animations API");
+        self.line("(import \"animate\" \"keyframes\" (func $animate_keyframes (param i32 i32 i32 i32)))");
+        self.line("(import \"animate\" \"cancel\" (func $animate_cancel (param i32)))");
+
+        // ── Env — window.__env ───────────────────────────────────────────────
+        self.line("");
+        self.line(";; Env — browser window.__env access");
+        self.line("(import \"env\" \"get\" (func $env_get (param i32 i32) (result i32)))");
+
+        // ── Streaming — ReadableStream + EventSource ─────────────────────────
+        self.line("");
+        self.line(";; Streaming — browser ReadableStream + EventSource APIs");
+        self.line("(import \"streaming\" \"streamFetch\" (func $streaming_streamFetch (param i32 i32 i32)))");
+        self.line("(import \"streaming\" \"sseConnect\" (func $streaming_sseConnect (param i32 i32 i32)))");
+
+        // ── WASM-internal (no JS imports) ────────────────────────────────────
+        // signal, string, flags, cache, permissions, form, lifecycle, contract,
+        // gesture (math), shortcuts, virtual scroll, style injection, animation,
+        // a11y, theme, seo, trace, dnd, media (lazy/preload), router matching,
+        // mem ops, atomic state — all emitted by emit_*_runtime methods.
 
         // Share — syscall lives in core.js, no separate module
         self.line("");

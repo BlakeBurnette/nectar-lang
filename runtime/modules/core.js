@@ -1,7 +1,11 @@
 // runtime/modules/core.js — Nectar unified syscall layer
 // ONE file. ONLY browser APIs that WASM physically cannot call.
 // Everything else (logic, state, routing, components, formatting, crypto) is pure Rust/WASM.
-// Namespaces that are WASM-internal (no JS bridge): signal, string, flags, cache, permissions, form, lifecycle, contract
+//
+// WASM-internal (no JS bridge): signal, string, flags, cache, permissions, form, lifecycle,
+// contract, gesture, shortcuts, virtual scroll, style injection, animation, a11y, theme,
+// seo, trace, dnd, media lazy/preload, router matching, clipboard (via webapi), test (via webapi),
+// mem ops (WASM reads its own memory), atomic state (WASM atomic instructions)
 //
 // DOM strategy:
 //   - Initial render: WASM builds HTML string in linear memory, single mount() sets innerHTML
@@ -79,6 +83,7 @@ const R = NectarRuntime;
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  WASM IMPORTS — organized by namespace to match codegen.rs import declarations
+//  21 namespaces. Every function calls a browser API WASM physically cannot.
 // ══════════════════════════════════════════════════════════════════════════════
 
 export const name = 'core';
@@ -188,7 +193,6 @@ export const wasmImports = {
 
     addEventListener(elId, evtPtr, evtLen, cbIdx) {
       const handler = (e) => {
-        // Write event data to WASM memory if callback_with_event exists
         if (R.__instance.exports.__event_data_ptr) {
           const dv = new DataView(R.__memory.buffer);
           const base = R.__instance.exports.__event_data_ptr();
@@ -202,7 +206,7 @@ export const wasmImports = {
             dv.setInt32(base + 28, s.len, true);
           }
           if (e.dataTransfer) {
-            R.__objects[0] = e; // stash event for getData/setData
+            R.__objects[0] = e; // stash event for getDragData/setDragData
           }
         }
         R.__cb(cbIdx);
@@ -234,7 +238,7 @@ export const wasmImports = {
     getWindowHeight() { return window.innerHeight; },
     getOuterHtml() { return R.__allocString(document.documentElement.outerHTML); },
 
-    // Drag data transfer (on stashed event)
+    // Drag data transfer (on stashed event from addEventListener)
     setDragData(fmtPtr, fmtLen, dataPtr, dataLen) {
       const e = R.__objects[0];
       if (e && e.dataTransfer) e.dataTransfer.setData(R.__getString(fmtPtr, fmtLen), R.__getString(dataPtr, dataLen));
@@ -248,16 +252,39 @@ export const wasmImports = {
       const e = R.__objects[0];
       if (e && e.preventDefault) e.preventDefault();
     },
-  },
 
-  // ── Memory read/write ────────────────────────────────────────────────────
-  mem: {
-    getString(ptr, len) { return R.__getString(ptr, len); },
-    allocString(strPtr, strLen) { return R.__allocString(R.__getString(strPtr, strLen)); },
-    readI32(ptr) { return new DataView(R.__memory.buffer).getInt32(ptr, true); },
-    writeI32(ptr, val) { new DataView(R.__memory.buffer).setInt32(ptr, val, true); },
-    readF64(ptr) { return new DataView(R.__memory.buffer).getFloat64(ptr, true); },
-    writeF64(ptr, val) { new DataView(R.__memory.buffer).setFloat64(ptr, val, true); },
+    // Absorbed from embed — script loading needs onload callback bridge
+    loadScript(urlPtr, urlLen, cbIdx) {
+      const script = document.createElement('script');
+      script.src = R.__getString(urlPtr, urlLen);
+      script.onload = () => R.__cb(cbIdx);
+      script.onerror = () => R.__cb(cbIdx);
+      document.head.appendChild(script);
+    },
+
+    // Absorbed from loader — dynamic chunk loading needs onload + Promise
+    loadChunk(urlPtr, urlLen) {
+      const script = document.createElement('script');
+      script.src = R.__getString(urlPtr, urlLen);
+      document.head.appendChild(script);
+      return R.__registerObject(new Promise((resolve) => { script.onload = resolve; }));
+    },
+
+    // Absorbed from media — Image() constructor + .decode() are browser APIs
+    decodeImage(srcPtr, srcLen, cbIdx) {
+      const img = new Image();
+      img.src = R.__getString(srcPtr, srcLen);
+      img.decode().then(() => R.__cb(cbIdx)).catch(() => R.__cb(cbIdx));
+    },
+
+    // Absorbed from media — Image() onload for progressive upgrade
+    progressiveImage(elId, lowPtr, lowLen, highPtr, highLen) {
+      const el = R.__getElement(elId);
+      el.src = R.__getString(lowPtr, lowLen);
+      const img = new Image();
+      img.src = R.__getString(highPtr, highLen);
+      img.onload = () => { el.src = img.src; };
+    },
   },
 
   // ── Timers ───────────────────────────────────────────────────────────────
@@ -271,7 +298,7 @@ export const wasmImports = {
     now() { return performance.now(); },
   },
 
-  // ── webapi — matches codegen.rs "webapi" namespace ───────────────────────
+  // ── webapi — storage, clipboard, history, console, random ──────────────
   webapi: {
     // Storage
     localStorageGet(kp, kl) { const v = localStorage.getItem(R.__getString(kp, kl)); return v !== null ? R.__allocString(v) : 0; },
@@ -286,6 +313,7 @@ export const wasmImports = {
     getLocationHref() { return R.__allocString(location.href); },
     getLocationSearch() { return R.__allocString(location.search); },
     getLocationHash() { return R.__allocString(location.hash); },
+    getLocationPathname() { return R.__allocString(location.pathname); },
     pushState(urlPtr, urlLen) { history.pushState(null, '', R.__getString(urlPtr, urlLen)); },
     replaceState(urlPtr, urlLen) { history.replaceState(null, '', R.__getString(urlPtr, urlLen)); },
     // Console
@@ -294,9 +322,16 @@ export const wasmImports = {
     consoleError(ptr, len) { console.error(R.__getString(ptr, len)); },
     // Misc
     randomFloat() { return Math.random(); },
+    // Absorbed from router — popstate is a window event WASM can't listen to
+    onPopState(cbIdx) { window.addEventListener('popstate', () => R.__cb(cbIdx)); },
+    // Absorbed from router — URL search param parsing
+    getSearchParam(namePtr, nameLen) {
+      const val = new URLSearchParams(location.search).get(R.__getString(namePtr, nameLen));
+      return val ? R.__allocString(val) : 0;
+    },
   },
 
-  // ── HTTP — matches codegen "http" namespace ──────────────────────────────
+  // ── HTTP — fetch() is a browser API ────────────────────────────────────
   http: {
     fetch(urlPtr, urlLen, optsPtr, optsLen) {
       const url = R.__getString(urlPtr, urlLen);
@@ -304,7 +339,6 @@ export const wasmImports = {
       return R.__registerObject(fetch(url, opts));
     },
     fetchGetBody(promiseId) {
-      // Returns allocated string ptr after resolving
       return R.__getObject(promiseId);
     },
     fetchGetStatus(promiseId) {
@@ -312,7 +346,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Observer — IntersectionObserver, matchMedia ──────────────────────────
+  // ── Observer — IntersectionObserver, matchMedia ────────────────────────
   observe: {
     matchMedia(qPtr, qLen) { return matchMedia(R.__getString(qPtr, qLen)).matches ? 1 : 0; },
     intersectionObserver(cbIdx, optsPtr, optsLen) {
@@ -324,7 +358,7 @@ export const wasmImports = {
     disconnect(obsId) { R.__getObject(obsId).disconnect(); },
   },
 
-  // ── Share — navigator.share (browser API, cannot be WASM) ───────────────
+  // ── Share — navigator.share ────────────────────────────────────────────
   share: {
     canShare() { return navigator.share ? 1 : 0; },
     nativeShare(titlePtr, titleLen, textPtr, textLen, urlPtr, urlLen) {
@@ -338,11 +372,7 @@ export const wasmImports = {
     },
   },
 
-  // ════════════════════════════════════════════════════════════════════════════
-  //  BROWSER APIs — things WASM physically cannot do
-  // ════════════════════════════════════════════════════════════════════════════
-
-  // ── WebSocket (codegen namespace: "ws") ─────────────────────────────────
+  // ── WebSocket ──────────────────────────────────────────────────────────
   ws: {
     connect(urlPtr, urlLen) { return R.__registerObject(new WebSocket(R.__getString(urlPtr, urlLen))); },
     send(wsId, dataPtr, dataLen) { R.__getObject(wsId).send(R.__getString(dataPtr, dataLen)); },
@@ -356,7 +386,7 @@ export const wasmImports = {
     getReadyState(wsId) { return R.__getObject(wsId).readyState; },
   },
 
-  // ── IndexedDB ────────────────────────────────────────────────────────────
+  // ── IndexedDB ──────────────────────────────────────────────────────────
   db: {
     open(namePtr, nameLen, version) {
       const name = R.__getString(namePtr, nameLen);
@@ -405,28 +435,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Clipboard ────────────────────────────────────────────────────────────
-  clipboard: {
-    copy(textPtr, textLen) {
-      navigator.clipboard.writeText(R.__getString(textPtr, textLen)).catch(() => {});
-      return 1;
-    },
-    paste(cbIdx) {
-      navigator.clipboard.readText()
-        .then(t => R.__cbData(cbIdx, R.__allocString(t)))
-        .catch(() => R.__cbData(cbIdx, 0));
-    },
-    copyImage(dataPtr, dataLen) {
-      if (typeof ClipboardItem === 'undefined') return 0;
-      const data = R.__getString(dataPtr, dataLen);
-      fetch(data).then(r => r.blob()).then(blob => {
-        navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-      }).catch(() => {});
-      return 1;
-    },
-  },
-
-  // ── Web Workers ──────────────────────────────────────────────────────────
+  // ── Web Workers ────────────────────────────────────────────────────────
   worker: {
     spawn(codePtr, codeLen) {
       const blob = new Blob([R.__getString(codePtr, codeLen)], { type: 'application/javascript' });
@@ -439,7 +448,6 @@ export const wasmImports = {
       const { port1, port2 } = new MessageChannel();
       const id1 = R.__registerObject(port1);
       const id2 = R.__registerObject(port2);
-      // Write both IDs — WASM reads them from a known memory location
       return id1; // WASM convention: port2 = id1 + 1
     },
     channelSend(portId, dataPtr, dataLen) {
@@ -450,21 +458,15 @@ export const wasmImports = {
       port.addEventListener('message', (e) => R.__cbData(cbIdx, R.__allocString(JSON.stringify(e.data))));
       port.start();
     },
-    parallel(fnPtrsPtr, fnCount, cbIdx) { /* orchestration in WASM — this is the JS entry */ R.__cb(cbIdx); },
+    parallel(fnPtrsPtr, fnCount, cbIdx) { R.__cb(cbIdx); },
     await(promiseId) { return R.__getObject(promiseId); },
     postMessage(workerId, dataPtr, dataLen) { R.__getObject(workerId).postMessage(R.__getString(dataPtr, dataLen)); },
     onMessage(workerId, cbIdx) { R.__getObject(workerId).addEventListener('message', (e) => R.__cbData(cbIdx, R.__allocString(JSON.stringify(e.data)))); },
     terminate(workerId) { R.__getObject(workerId).terminate(); },
   },
 
-  // ── PWA — Service Worker, Push, Caching ──────────────────────────────────
+  // ── PWA — Service Worker, Push, Caching ────────────────────────────────
   pwa: {
-    registerManifest(hrefPtr, hrefLen) {
-      const link = document.createElement('link');
-      link.rel = 'manifest';
-      link.href = R.__getString(hrefPtr, hrefLen);
-      document.head.appendChild(link);
-    },
     cachePrecache(namePtr, nameLen) {
       return caches.open(R.__getString(namePtr, nameLen));
     },
@@ -480,7 +482,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Hardware APIs ────────────────────────────────────────────────────────
+  // ── Hardware APIs ──────────────────────────────────────────────────────
   hardware: {
     haptic(pattern) { if (navigator.vibrate) navigator.vibrate(pattern); },
     biometricAuth(optsPtr, optsLen, successCb, failCb) {
@@ -510,21 +512,9 @@ export const wasmImports = {
     },
   },
 
-  // ── Gesture — longpress only (swipe/pinch math is WASM-internal) ───────
-  gesture: {
-    registerLongPress(elId, ms, cbIdx) {
-      let timer;
-      const el = R.__getElement(elId);
-      el.addEventListener('pointerdown', () => { timer = setTimeout(() => R.__cb(cbIdx), ms); });
-      el.addEventListener('pointerup', () => clearTimeout(timer));
-      el.addEventListener('pointerleave', () => clearTimeout(timer));
-    },
-  },
-
-  // ── Payment — sandboxed iframe + postMessage ─────────────────────────────
+  // ── Payment — sandboxed iframe + postMessage ───────────────────────────
   payment: {
     initProvider(namePtr, nameLen, keyPtr, keyLen, cbIdx) {
-      // Provider init (Stripe, etc.) — loads external script
       const script = document.createElement('script');
       script.src = R.__getString(namePtr, nameLen);
       script.onload = () => R.__cb(cbIdx);
@@ -545,7 +535,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Auth — redirect + cookies (browser-only APIs) ────────────────────────
+  // ── Auth — redirect + cookies ──────────────────────────────────────────
   auth: {
     login(urlPtr, urlLen) { location.href = R.__getString(urlPtr, urlLen); },
     logout(urlPtr, urlLen) { if (urlPtr) location.href = R.__getString(urlPtr, urlLen); },
@@ -562,7 +552,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Upload — file picker + XHR (browser APIs) ───────────────────────────
+  // ── Upload — file picker + XHR ─────────────────────────────────────────
   upload: {
     init(acceptPtr, acceptLen, multiple, cbIdx) {
       const input = document.createElement('input');
@@ -590,7 +580,7 @@ export const wasmImports = {
     cancel(xhrId) { R.__getObject(xhrId).abort(); },
   },
 
-  // ── PDF / IO — print + blob download ─────────────────────────────────────
+  // ── PDF — iframe + print ───────────────────────────────────────────────
   pdf: {
     create(htmlPtr, htmlLen, stylePtr, styleLen) {
       const iframe = document.createElement('iframe');
@@ -614,6 +604,7 @@ export const wasmImports = {
     },
   },
 
+  // ── IO — Blob download ────────────────────────────────────────────────
   io: {
     download(dataPtr, dataLen, namePtr, nameLen) {
       const data = R.__getString(dataPtr, dataLen);
@@ -628,7 +619,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Time — Intl.DateTimeFormat, timezone (browser locale APIs) ───────────
+  // ── Time — Intl.DateTimeFormat, timezone ────────────────────────────────
   time: {
     now() { return Date.now(); },
     format(ms, localePtr, localeLen) {
@@ -643,21 +634,7 @@ export const wasmImports = {
     },
   },
 
-  // ── Trace — performance.mark/measure (DevTools API) ──────────────────────
-  trace: {
-    start(namePtr, nameLen) {
-      performance.mark(R.__getString(namePtr, nameLen) + ':start');
-      return 1;
-    },
-    end(spanId) {
-      performance.mark('span:end');
-    },
-    error(spanId, msgPtr, msgLen) {
-      console.error('[trace]', R.__getString(msgPtr, msgLen));
-    },
-  },
-
-  // ── Perf — raw performance API ───────────────────────────────────────────
+  // ── Perf — performance.mark/measure ────────────────────────────────────
   perf: {
     mark(namePtr, nameLen) { performance.mark(R.__getString(namePtr, nameLen)); },
     measure(namePtr, nameLen, startPtr, startLen, endPtr, endLen) {
@@ -665,119 +642,7 @@ export const wasmImports = {
     },
   },
 
-  // ── SEO — document.title + meta/link/jsonld in <head> ───────────────────
-  // These are DOM writes but target <head> which can't go through flush() nid system.
-  // WASM doesn't have data-nid handles for <head> children. Minimal JS bridge.
-  seo: {
-    setMeta(typePtr, typeLen, namePtr, nameLen, valPtr, valLen, extraPtr, extraLen) {
-      const name = R.__getString(namePtr, nameLen);
-      const val = R.__getString(valPtr, valLen);
-      let el = document.querySelector(`meta[name="${name}"],meta[property="${name}"]`);
-      if (!el) { el = document.createElement('meta'); el.setAttribute(name.startsWith('og:') ? 'property' : 'name', name); document.head.appendChild(el); }
-      el.content = val;
-    },
-    registerStructuredData(jsonPtr, jsonLen) {
-      const el = document.createElement('script');
-      el.type = 'application/ld+json';
-      el.textContent = R.__getString(jsonPtr, jsonLen);
-      document.head.appendChild(el);
-    },
-    emitStaticHtml(ptr, len) { return R.__allocString(document.documentElement.outerHTML); },
-  },
-
-  // ── Embed — script loading + sandboxed iframes ──────────────────────────
-  embed: {
-    loadScript(urlPtr, urlLen, attrsPtr, attrsLen, cbIdx) {
-      const script = document.createElement('script');
-      script.src = R.__getString(urlPtr, urlLen);
-      script.onload = () => R.__cb(cbIdx);
-      script.onerror = () => R.__cb(cbIdx);
-      document.head.appendChild(script);
-    },
-    loadSandboxed(urlPtr, urlLen, sandboxPtr, sandboxLen) {
-      const iframe = document.createElement('iframe');
-      iframe.src = R.__getString(urlPtr, urlLen);
-      iframe.sandbox = R.__getString(sandboxPtr, sandboxLen);
-      document.body.appendChild(iframe);
-      return R.__registerObject(iframe);
-    },
-  },
-
-  // ── Loader — code splitting (dynamic script/link insertion) ──────────────
-  loader: {
-    loadChunk(urlPtr, urlLen) {
-      const script = document.createElement('script');
-      script.src = R.__getString(urlPtr, urlLen);
-      document.head.appendChild(script);
-      return R.__registerObject(new Promise((resolve) => { script.onload = resolve; }));
-    },
-    preloadChunk(urlPtr, urlLen) {
-      const link = document.createElement('link');
-      link.rel = 'modulepreload';
-      link.href = R.__getString(urlPtr, urlLen);
-      document.head.appendChild(link);
-    },
-  },
-
-  // ── Theme — prefers-color-scheme + localStorage (browser APIs) ───────────
-  theme: {
-    getAttribute() { return R.__allocString(document.documentElement.getAttribute('data-theme') || ''); },
-    setAttribute(ptr, len) { document.documentElement.setAttribute('data-theme', R.__getString(ptr, len)); },
-    storageGet() { const v = localStorage.getItem('nectar-theme'); return v ? R.__allocString(v) : 0; },
-    storageSet(ptr, len) { localStorage.setItem('nectar-theme', R.__getString(ptr, len)); },
-    prefersDark() { return matchMedia('(prefers-color-scheme:dark)').matches ? 1 : 0; },
-  },
-
-  // ── A11y — ARIA attributes + focus management ───────────────────────────
-  // Most of this is SET_ATTR/FOCUS opcodes. Only announce() needs a live region.
-  a11y: {
-    setAriaAttribute(elId, namePtr, nameLen, valPtr, valLen) {
-      R.__getElement(elId).setAttribute(R.__getString(namePtr, nameLen), R.__getString(valPtr, valLen));
-    },
-    setRole(elId, rolePtr, roleLen) {
-      R.__getElement(elId).setAttribute('role', R.__getString(rolePtr, roleLen));
-    },
-    manageFocus(elId) { R.__getElement(elId).focus(); },
-    announceToScreenReader(textPtr, textLen, modePtr) {
-      let region = document.getElementById('nectar-a11y-live');
-      if (!region) {
-        region = document.createElement('div');
-        region.id = 'nectar-a11y-live';
-        region.setAttribute('aria-live', 'polite');
-        region.setAttribute('aria-atomic', 'true');
-        region.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;';
-        document.body.appendChild(region);
-      }
-      region.textContent = R.__getString(textPtr, textLen);
-    },
-    trapFocus(elId) {
-      const container = R.__getElement(elId);
-      const focusable = container.querySelectorAll('button,a,[tabindex],input,textarea,select');
-      if (focusable.length) focusable[0].focus();
-    },
-  },
-
-  // ── Shortcuts — keyboard events (uses dom.addEventListener internally) ──
-  shortcuts: {
-    register(keyPtr, keyLen, modifiers, cbIdx) {
-      const key = R.__getString(keyPtr, keyLen);
-      document.addEventListener('keydown', (e) => {
-        if (e.key !== key) return;
-        const mods = (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
-        if (mods === modifiers) { e.preventDefault(); R.__cb(cbIdx); }
-      });
-    },
-  },
-
-  // ── Virtual list — scroll measurements (read-only DOM, needs JS) ────────
-  virtual: {
-    scrollTo(containerId, offset) {
-      R.__getElement(containerId).scrollTop = offset;
-    },
-  },
-
-  // ── Animate — keyframes need rAF + DOM style writes ──────────────────────
-  // rAF is in timer namespace, style writes are flush opcodes.
+  // ── Animate — Web Animations API ───────────────────────────────────────
   animate: {
     keyframes(elId, framesPtr, framesLen, cbIdx) {
       const el = R.__getElement(elId);
@@ -788,95 +653,16 @@ export const wasmImports = {
     cancel(elId) { R.__getElement(elId).getAnimations().forEach(a => a.cancel()); },
   },
 
-  // ── Animation — CSS transitions/keyframes (codegen "animation" namespace)
-  animation: {
-    registerTransition(elId, propPtr, propLen, durPtr, durLen, easingPtr, easingLen, cbIdx) {
-      const el = R.__getElement(elId);
-      el.style.transition = `${R.__getString(propPtr, propLen)} ${R.__getString(durPtr, durLen)} ${R.__getString(easingPtr, easingLen)}`;
-      el.addEventListener('transitionend', () => R.__cb(cbIdx), { once: true });
-    },
-    registerKeyframes(namePtr, nameLen, cssPtr, cssLen) {
-      const style = document.createElement('style');
-      style.textContent = `@keyframes ${R.__getString(namePtr, nameLen)} { ${R.__getString(cssPtr, cssLen)} }`;
-      document.head.appendChild(style);
-    },
-    play(elId, namePtr, nameLen, durPtr, durLen) {
-      R.__getElement(elId).style.animation = `${R.__getString(namePtr, nameLen)} ${R.__getString(durPtr, durLen)}`;
-    },
-    pause(elId) { R.__getElement(elId).style.animationPlayState = 'paused'; },
-    cancel(elId) { R.__getElement(elId).style.animation = 'none'; },
-    onFinish(elId, cbIdx) { R.__getElement(elId).addEventListener('animationend', () => R.__cb(cbIdx), { once: true }); },
-  },
-
-  // ── DnD — drag/drop (dataTransfer is browser API, can't be WASM) ────────
-  dnd: {
-    makeDraggable(elId, dataPtr, dataLen, cbIdx) {
-      const el = R.__getElement(elId);
-      el.draggable = true;
-      el.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', R.__getString(dataPtr, dataLen));
-        R.__cb(cbIdx);
-      });
-    },
-    makeDroppable(elId, overCb, leaveCb, dropCb) {
-      const el = R.__getElement(elId);
-      el.addEventListener('dragover', (e) => { e.preventDefault(); R.__cb(overCb); });
-      el.addEventListener('dragleave', () => R.__cb(leaveCb));
-      el.addEventListener('drop', (e) => {
-        e.preventDefault();
-        R.__objects[0] = e; // stash for getDragData
-        R.__cb(dropCb);
-      });
-    },
-    getData() { const e = R.__objects[0]; return e ? R.__allocString(e.dataTransfer.getData('text/plain')) : 0; },
-  },
-
-  // ── State — atomic state (WASM SharedArrayBuffer ops) ───────────────────
-  state: {
-    atomicGet(ptr) { return Atomics.load(new Int32Array(R.__memory.buffer), ptr >> 2); },
-    atomicSet(ptr, val) { Atomics.store(new Int32Array(R.__memory.buffer), ptr >> 2, val); },
-    atomicCompareSwap(ptr, expected, desired) {
-      return Atomics.compareExchange(new Int32Array(R.__memory.buffer), ptr >> 2, expected, desired);
-    },
-  },
-
-  // ── Env — environment variable access ───────────────────────────────────
+  // ── Env — window.__env access ──────────────────────────────────────────
   env: {
     get(namePtr, nameLen) {
-      // In browser: check meta tag or window.__env
       const name = R.__getString(namePtr, nameLen);
       const val = (typeof window !== 'undefined' && window.__env && window.__env[name]) || '';
       return R.__allocString(val);
     },
   },
 
-  // ── Router runtime ──────────────────────────────────────────────────────
-  router: {
-    init(configPtr, configLen) { window.addEventListener('popstate', () => R.__cb(0)); },
-    navigate(urlPtr, urlLen) { history.pushState(null, '', R.__getString(urlPtr, urlLen)); },
-    currentPath() { return R.__allocString(location.pathname); },
-    getParam(namePtr, nameLen) {
-      const params = new URLSearchParams(location.search);
-      const val = params.get(R.__getString(namePtr, nameLen));
-      return val ? R.__allocString(val) : 0;
-    },
-    registerRoute(pathPtr, pathLen, cbIdx) { /* route table in WASM */ },
-  },
-
-  // ── Style runtime — scoped CSS injection ────────────────────────────────
-  style: {
-    injectStyles(cssPtr, cssLen, scopePtr, scopeLen) {
-      const style = document.createElement('style');
-      style.textContent = R.__getString(cssPtr, cssLen);
-      document.head.appendChild(style);
-      return R.__registerObject(style);
-    },
-    applyScope(elId, scopePtr, scopeLen) {
-      R.__getElement(elId).setAttribute('data-s', R.__getString(scopePtr, scopeLen));
-    },
-  },
-
-  // ── Streaming — SSE + streaming fetch ───────────────────────────────────
+  // ── Streaming — SSE + streaming fetch ──────────────────────────────────
   streaming: {
     streamFetch(urlPtr, urlLen, cbIdx) {
       fetch(R.__getString(urlPtr, urlLen)).then(res => {
@@ -895,40 +681,6 @@ export const wasmImports = {
       es.onmessage = (e) => R.__cbData(cbIdx, R.__allocString(e.data));
       return R.__registerObject(es);
     },
-  },
-
-  // ── Media — lazy loading, decode, preload (uses DOM + fetch) ────────────
-  media: {
-    lazyImage(elId, srcPtr, srcLen, placeholderPtr, placeholderLen) {
-      const el = R.__getElement(elId);
-      el.loading = 'lazy';
-      el.src = R.__getString(srcPtr, srcLen);
-    },
-    decodeImage(srcPtr, srcLen, cbIdx) {
-      const img = new Image();
-      img.src = R.__getString(srcPtr, srcLen);
-      img.decode().then(() => R.__cb(cbIdx)).catch(() => R.__cb(cbIdx));
-    },
-    preload(urlPtr, urlLen, asPtr, asLen) {
-      const link = document.createElement('link');
-      link.rel = 'preload';
-      link.href = R.__getString(urlPtr, urlLen);
-      link.as = R.__getString(asPtr, asLen);
-      document.head.appendChild(link);
-    },
-    progressiveImage(elId, lowPtr, lowLen, highPtr, highLen) {
-      const el = R.__getElement(elId);
-      el.src = R.__getString(lowPtr, lowLen);
-      const img = new Image();
-      img.src = R.__getString(highPtr, highLen);
-      img.onload = () => { el.src = img.src; };
-    },
-  },
-
-  // ── Test runtime ────────────────────────────────────────────────────────
-  test: {
-    log(ptr, len) { console.log(R.__getString(ptr, len)); },
-    error(ptr, len) { console.error(R.__getString(ptr, len)); },
   },
 };
 
@@ -1047,7 +799,6 @@ export function connectHotReload(wsUrl) {
       try { msg = JSON.parse(e.data); } catch { return; }
 
       if (msg.type === 'css') {
-        // Hot-reload CSS by cache-busting link tags
         for (const file of (msg.files || [])) {
           const links = document.querySelectorAll('link[rel="stylesheet"]');
           const name = file.split('/').pop();
@@ -1059,7 +810,6 @@ export function connectHotReload(wsUrl) {
             }
           }
         }
-        // Inject scoped styles
         for (const [scope, css] of Object.entries(msg.css || {})) {
           let el = document.querySelector(`style[data-nectar-scope="${scope}"]`);
           if (!el) { el = document.createElement('style'); el.setAttribute('data-nectar-scope', scope); document.head.appendChild(el); }
@@ -1069,7 +819,7 @@ export function connectHotReload(wsUrl) {
 
       if (msg.type === 'reload') {
         for (const file of (msg.files || [])) {
-          if (file.endsWith('.css')) continue; // handled above
+          if (file.endsWith('.css')) continue;
           try {
             const wasmUrl = '/' + file.split('/').pop().replace(/\.[^.]+$/, '') + '.wasm';
             const resp = await fetch(wasmUrl, { cache: 'no-store' });
