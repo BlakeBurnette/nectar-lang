@@ -1,64 +1,56 @@
-// runtime/modules/dnd.js — Drag and Drop runtime
+// runtime/modules/dnd.js — Drag and Drop syscall layer (logic in Rust/WASM)
 
-const DndRuntime = {
-  _dragData: null,
-  _dragSource: null,
+const _cbs = new Map();
+const _events = new Map();
+let _nextEvent = 1;
 
-  makeDraggable(selectorPtr, selectorLen, dataPtr, dataLen) {
-    const selector = readString(selectorPtr, selectorLen);
-    const data = dataLen > 0 ? readString(dataPtr, dataLen) : null;
-    document.querySelectorAll(selector).forEach(el => {
-      el.draggable = true;
-      el.style.cursor = 'grab';
-      el.addEventListener('dragstart', (e) => {
-        DndRuntime._dragData = data || el.textContent;
-        DndRuntime._dragSource = el;
-        el.style.opacity = '0.5';
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', DndRuntime._dragData);
+const wasmImports = {
+  dnd: {
+    addDragListeners(elId, startCb, endCb) {
+      const el = document.getElementById(elId);
+      el.addEventListener('dragstart', e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(startCb)?.(eid);
       });
-      el.addEventListener('dragend', () => {
-        el.style.opacity = '1';
-        el.style.cursor = 'grab';
-        DndRuntime._dragData = null;
-        DndRuntime._dragSource = null;
+      el.addEventListener('dragend', e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(endCb)?.(eid);
       });
-    });
+    },
+
+    addDropListeners(elId, overCb, leaveCb, dropCb) {
+      const el = document.getElementById(elId);
+      el.addEventListener('dragover', e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(overCb)?.(eid);
+      });
+      el.addEventListener('dragleave', e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(leaveCb)?.(eid);
+      });
+      el.addEventListener('drop', e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(dropCb)?.(eid);
+      });
+    },
+
+    setDragData(eventId, format, data) {
+      _events.get(eventId).dataTransfer.setData(format, data);
+    },
+
+    getDragData(eventId, format) {
+      return _events.get(eventId).dataTransfer.getData(format);
+    },
+
+    preventDefault(eventId) {
+      _events.get(eventId).preventDefault();
+    },
   },
-
-  makeDroppable(selectorPtr, selectorLen, callbackPtr, callbackLen) {
-    const selector = readString(selectorPtr, selectorLen);
-    document.querySelectorAll(selector).forEach(el => {
-      el.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        el.style.outline = '2px dashed #e94560';
-        e.dataTransfer.dropEffect = 'move';
-      });
-      el.addEventListener('dragleave', () => {
-        el.style.outline = '';
-      });
-      el.addEventListener('drop', (e) => {
-        e.preventDefault();
-        el.style.outline = '';
-        const data = e.dataTransfer.getData('text/plain');
-        el.dispatchEvent(new CustomEvent('nectar-drop', { detail: { data, source: DndRuntime._dragSource } }));
-      });
-    });
-  },
-
-  getData() { return DndRuntime._dragData; },
-  setData(dataPtr, dataLen) { DndRuntime._dragData = readString(dataPtr, dataLen); },
 };
 
-module.exports = {
-  name: 'dnd',
-  runtime: DndRuntime,
-  wasmImports: {
-    dnd: {
-      makeDraggable: DndRuntime.makeDraggable,
-      makeDroppable: DndRuntime.makeDroppable,
-      getData: DndRuntime.getData,
-      setData: DndRuntime.setData,
-    }
-  }
-};
+module.exports = { name: 'dnd', runtime: { _cbs, _events }, wasmImports };

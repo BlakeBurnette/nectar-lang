@@ -1,87 +1,59 @@
-// runtime/modules/worker.js — Web Worker concurrency runtime
-// Note: WorkerPool is defined in core.js; this module provides the WASM import bindings.
+// runtime/modules/worker.js — Web Worker syscall layer (logic in Rust/WASM)
 
-const WorkerRuntime = {
-  spawn(runtime, funcIdx) {
-    if (runtime.workerPool) {
-      runtime.workerPool.spawnByIndex(funcIdx);
-    }
-    return funcIdx;
-  },
+const _cbs = new Map();
+const _workers = new Map();
+const _ports = new Map();
+let _nextWorker = 1;
+let _nextPort = 1;
 
-  channelCreate(runtime) {
-    const channelId = runtime.nextChannelId++;
-    const { port1, port2 } = new MessageChannel();
-    runtime.channels.set(channelId, { port1, port2, buffer: [], waiters: [] });
-    return channelId;
-  },
+const wasmImports = {
+  worker: {
+    createWorker(blobUrl) {
+      const worker = new Worker(blobUrl);
+      const id = _nextWorker++;
+      _workers.set(id, worker);
+      return id;
+    },
 
-  channelSend(runtime, channelId, valuePtr, valueLen) {
-    const ch = runtime.channels.get(channelId);
-    if (!ch) return;
-    const bytes = new Uint8Array(runtime.memory.buffer, valuePtr, valueLen).slice();
-    if (ch.waiters.length > 0) {
-      const waiter = ch.waiters.shift();
-      waiter(bytes);
-    } else {
-      ch.buffer.push(bytes);
-    }
-    ch.port1.postMessage(bytes);
-  },
+    createBlobUrl(code) {
+      return URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    },
 
-  channelRecv(runtime, channelId, callbackIdx) {
-    const ch = runtime.channels.get(channelId);
-    if (!ch) return;
-    const deliver = (bytes) => {
-      const ptr = runtime._allocWasm(bytes.length);
-      new Uint8Array(runtime.memory.buffer, ptr, bytes.length).set(bytes);
-      const handler = runtime.instance.exports[`__channel_recv_${callbackIdx}`];
-      if (handler) handler(ptr, bytes.length);
-    };
-    if (ch.buffer.length > 0) {
-      deliver(ch.buffer.shift());
-    } else {
-      ch.waiters.push(deliver);
-    }
-  },
+    postMessage(workerId, data) {
+      _workers.get(workerId).postMessage(data);
+    },
 
-  parallel(runtime, funcIndicesPtr, funcIndicesLen, callbackIdx) {
-    const indices = [];
-    const view = new DataView(runtime.memory.buffer);
-    for (let i = 0; i < funcIndicesLen; i++) {
-      indices.push(view.getInt32(funcIndicesPtr + i * 4, true));
-    }
-    const promises = indices.map((funcIdx) => {
-      if (runtime.workerPool) return runtime.workerPool.spawnByIndex(funcIdx);
-      const table = runtime.instance.exports.__indirect_function_table;
-      if (table) { const fn = table.get(funcIdx); return Promise.resolve(fn ? fn() : undefined); }
-      return Promise.resolve(undefined);
-    });
-    Promise.all(promises).then((results) => {
-      const handler = runtime.instance.exports[`__parallel_done_${callbackIdx}`];
-      if (handler) {
-        const resultBytes = new Int32Array(results.map(r => r || 0));
-        const ptr = runtime._allocWasm(resultBytes.byteLength);
-        new Uint8Array(runtime.memory.buffer, ptr, resultBytes.byteLength)
-          .set(new Uint8Array(resultBytes.buffer));
-        handler(ptr, results.length);
-      }
-    });
+    onMessage(workerId, cbIdx) {
+      _workers.get(workerId).addEventListener('message', e => {
+        _cbs.get(cbIdx)?.(e.data);
+      });
+    },
+
+    terminateWorker(workerId) {
+      _workers.get(workerId).terminate();
+      _workers.delete(workerId);
+    },
+
+    createMessageChannel() {
+      const { port1, port2 } = new MessageChannel();
+      const id1 = _nextPort++;
+      const id2 = _nextPort++;
+      _ports.set(id1, port1);
+      _ports.set(id2, port2);
+      return [id1, id2];
+    },
+
+    portPostMessage(portId, data) {
+      _ports.get(portId).postMessage(data);
+    },
+
+    onPortMessage(portId, cbIdx) {
+      _ports.get(portId).addEventListener('message', e => {
+        _cbs.get(cbIdx)?.(e.data);
+      });
+      _ports.get(portId).start();
+    },
   },
 };
 
-const workerModule = {
-  name: 'worker',
-  runtime: WorkerRuntime,
-  wasmImports: {
-    worker: {
-      spawn: WorkerRuntime.spawn,
-      channelCreate: WorkerRuntime.channelCreate,
-      channelSend: WorkerRuntime.channelSend,
-      channelRecv: WorkerRuntime.channelRecv,
-      parallel: WorkerRuntime.parallel,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = workerModule;
+module.exports = { name: 'worker', runtime: { _cbs, _workers, _ports }, wasmImports };

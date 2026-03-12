@@ -1,80 +1,41 @@
-// runtime/modules/embed.js — Third-party script/widget integration
+// runtime/modules/embed.js — Embed syscall layer (logic in Rust/WASM)
 
-const EmbedRuntime = {
-  _embeds: new Map(),
+const _cbs = new Map();
 
-  loadScript(readString, srcPtr, srcLen, loadingPtr, loadingLen, integrityOffset) {
-    const src = readString(srcPtr, srcLen);
-    const loading = readString(loadingPtr, loadingLen);
+const wasmImports = {
+  embed: {
+    loadScript(url, attrs) {
+      const script = document.createElement('script');
+      script.src = url;
+      if (attrs) Object.assign(script, JSON.parse(attrs));
+      document.head.appendChild(script);
+    },
 
-    const script = document.createElement('script');
-    script.src = src;
+    loadIframe(url, sandbox, style) {
+      const iframe = document.createElement('iframe');
+      iframe.src = url;
+      iframe.sandbox = sandbox;
+      iframe.style.cssText = style;
+      document.body.appendChild(iframe);
+      return iframe;
+    },
 
-    switch (loading) {
-      case 'defer': script.defer = true; break;
-      case 'async': script.async = true; break;
-      case 'lazy':
-        script.dataset.lazySrc = src;
-        script.removeAttribute('src');
-        const observer = new IntersectionObserver((entries) => {
-          entries.forEach(entry => {
-            if (entry.isIntersecting) {
-              script.src = script.dataset.lazySrc;
-              observer.disconnect();
-            }
-          });
-        });
-        if (document.body) observer.observe(document.body);
-        break;
-      case 'idle':
-        if (typeof requestIdleCallback !== 'undefined') {
-          requestIdleCallback(() => document.head.appendChild(script));
-          return;
-        }
-        break;
-    }
+    observeViewport(elId, cbIdx) {
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => _cbs.get(cbIdx)?.(entry.isIntersecting ? 1 : 0));
+      });
+      observer.observe(document.getElementById(elId));
+    },
 
-    if (integrityOffset > 0) {
-      script.crossOrigin = 'anonymous';
-    }
-
-    document.head.appendChild(script);
-    EmbedRuntime._embeds.set(src, { script, loading });
-  },
-
-  loadSandboxed(readString, namePtr, nameLen, srcPtr, srcLen) {
-    const name = readString(namePtr, nameLen);
-    const src = readString(srcPtr, srcLen);
-
-    const iframe = document.createElement('iframe');
-    iframe.src = src;
-    iframe.sandbox = 'allow-scripts';
-    iframe.style.cssText = 'border:none;width:100%;';
-    iframe.title = name;
-    iframe.loading = 'lazy';
-
-    EmbedRuntime._embeds.set(name, { iframe, sandboxed: true });
-    return iframe;
-  },
-
-  audit() {
-    const report = [];
-    for (const [key, embed] of EmbedRuntime._embeds) {
-      report.push({ name: key, sandboxed: !!embed.sandboxed, loading: embed.loading || 'default' });
-    }
-    return report;
+    requestIdleCallback(cbIdx) {
+      const fn = deadline => _cbs.get(cbIdx)?.(deadline.timeRemaining());
+      if (typeof window.requestIdleCallback !== 'undefined') {
+        window.requestIdleCallback(fn);
+      } else {
+        setTimeout(() => fn({ timeRemaining: () => 0 }), 1);
+      }
+    },
   },
 };
 
-const embedModule = {
-  name: 'embed',
-  runtime: EmbedRuntime,
-  wasmImports: {
-    embed: {
-      loadScript: EmbedRuntime.loadScript,
-      loadSandboxed: EmbedRuntime.loadSandboxed,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = embedModule;
+module.exports = { name: 'embed', runtime: { _cbs }, wasmImports };

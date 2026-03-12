@@ -1,43 +1,24 @@
-// runtime/modules/loader.js — Code splitting / chunk loading runtime
+// runtime/modules/loader.js — Script/link loading syscall layer (logic in Rust/WASM)
 
-const LoaderRuntime = {
-  _chunks: new Map(),
-  _loaded: new Set(),
+const _cbs = new Map();
 
-  async loadChunk(readString, namePtr, nameLen) {
-    const name = readString(namePtr, nameLen);
-    if (LoaderRuntime._loaded.has(name)) return 1;
-    const script = document.createElement("script");
-    script.src = `/chunks/${name}.js`;
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = reject;
+const wasmImports = {
+  loader: {
+    insertScript(url, cbIdx) {
+      const script = document.createElement('script');
+      script.src = url;
+      script.onload = () => _cbs.get(cbIdx)?.(1);
+      script.onerror = () => _cbs.get(cbIdx)?.(0);
       document.head.appendChild(script);
-    });
-    LoaderRuntime._loaded.add(name);
-    return 1;
-  },
+    },
 
-  preloadChunk(readString, namePtr, nameLen) {
-    const name = readString(namePtr, nameLen);
-    if (!LoaderRuntime._loaded.has(name)) {
-      const link = document.createElement("link");
-      link.rel = "modulepreload";
-      link.href = `/chunks/${name}.js`;
+    insertLink(url, rel) {
+      const link = document.createElement('link');
+      link.href = url;
+      link.rel = rel;
       document.head.appendChild(link);
-    }
+    },
   },
 };
 
-const loaderModule = {
-  name: 'loader',
-  runtime: LoaderRuntime,
-  wasmImports: {
-    loader: {
-      loadChunk: LoaderRuntime.loadChunk,
-      preloadChunk: LoaderRuntime.preloadChunk,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = loaderModule;
+module.exports = { name: 'loader', runtime: { _cbs }, wasmImports };

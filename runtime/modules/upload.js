@@ -1,62 +1,61 @@
-// runtime/modules/upload.js — Resumable chunked file upload runtime
+// runtime/modules/upload.js — Upload syscall layer (logic in Rust/WASM)
 
-const UploadRuntime = {
-  _uploads: new Map(),
+const _cbs = new Map();
+const _xhrs = new Map();
+const _fds = new Map();
+let _nextXhr = 1;
+let _nextFd = 1;
 
-  init(readString, namePtr, nameLen, configPtr, configLen) {
-    const name = readString(namePtr, nameLen);
-    const config = JSON.parse(readString(configPtr, configLen));
-    UploadRuntime._uploads.set(name, { config, active: null });
-  },
+const wasmImports = {
+  upload: {
+    openFilePicker(accept, multiple) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      if (accept) input.accept = accept;
+      if (multiple) input.multiple = true;
+      input.click();
+      return input;
+    },
 
-  start(readString, namePtr, nameLen) {
-    const name = readString(namePtr, nameLen);
-    const upload = UploadRuntime._uploads.get(name);
-    if (!upload) return 0;
-    const input = document.createElement('input');
-    input.type = 'file';
-    if (upload.config.accept) input.accept = upload.config.accept.join(',');
-    input.onchange = async () => {
-      const file = input.files[0];
-      if (!file) return;
-      if (upload.config.max_size && file.size > upload.config.max_size) {
-        if (upload.config.onError) upload.config.onError('File too large');
-        return;
-      }
+    createXhr(url, method) {
       const xhr = new XMLHttpRequest();
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && upload.config.onProgress) {
-          upload.config.onProgress(Math.round(e.loaded / e.total * 100));
-        }
-      };
-      xhr.onload = () => { if (upload.config.onComplete) upload.config.onComplete(xhr.response); };
-      xhr.onerror = () => { if (upload.config.onError) upload.config.onError(xhr.statusText); };
-      xhr.open('POST', upload.config.endpoint);
-      const form = new FormData();
-      form.append('file', file);
-      xhr.send(form);
-    };
-    input.click();
-    return 1;
-  },
+      xhr.open(method, url);
+      const id = _nextXhr++;
+      _xhrs.set(id, xhr);
+      return id;
+    },
 
-  cancel(readString, namePtr, nameLen) {
-    const name = readString(namePtr, nameLen);
-    const upload = UploadRuntime._uploads.get(name);
-    if (upload?.active) upload.active.abort();
+    sendXhr(xhrId, formData) {
+      _xhrs.get(xhrId).send(formData);
+    },
+
+    abortXhr(xhrId) {
+      _xhrs.get(xhrId).abort();
+    },
+
+    onXhrProgress(xhrId, cbIdx) {
+      _xhrs.get(xhrId).upload.addEventListener('progress', e => {
+        _cbs.get(cbIdx)?.(e.loaded, e.total);
+      });
+    },
+
+    onXhrComplete(xhrId, cbIdx) {
+      _xhrs.get(xhrId).addEventListener('load', e => {
+        _cbs.get(cbIdx)?.(e.target.status, e.target.response);
+      });
+    },
+
+    createFormData() {
+      const fd = new FormData();
+      const id = _nextFd++;
+      _fds.set(id, fd);
+      return id;
+    },
+
+    appendFormData(fdId, name, file) {
+      _fds.get(fdId).append(name, file);
+    },
   },
 };
 
-const uploadModule = {
-  name: 'upload',
-  runtime: UploadRuntime,
-  wasmImports: {
-    upload: {
-      init: UploadRuntime.init,
-      start: UploadRuntime.start,
-      cancel: UploadRuntime.cancel,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = uploadModule;
+module.exports = { name: 'upload', runtime: { _cbs, _xhrs, _fds }, wasmImports };

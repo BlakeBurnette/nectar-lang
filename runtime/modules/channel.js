@@ -1,72 +1,21 @@
-// runtime/modules/channel.js — WebSocket channel runtime
+// runtime/modules/channel.js — Pure syscall layer for WebSocket connections
+// ALL logic (reconnection, heartbeats, buffering) lives in Rust/WASM.
 
-const ChannelRuntime = {
-  _wsChannels: new Map(),
-
-  connect(readString, namePtr, nameLen, urlPtr, urlLen) {
-    const name = readString(namePtr, nameLen);
-    const url = readString(urlPtr, urlLen);
-    const ch = { name, url, ws: null, reconnect: true, heartbeatId: null, reconnectDelay: 1000 };
-
-    const open = () => {
-      ch.ws = new WebSocket(url);
-      ch.ws.onopen = () => {
-        ch.reconnectDelay = 1000;
-        if (ch.onConnect) ch.onConnect();
-      };
-      ch.ws.onmessage = (e) => {
-        if (ch.onMessage) ch.onMessage(e.data);
-      };
-      ch.ws.onclose = () => {
-        if (ch.onDisconnect) ch.onDisconnect();
-        if (ch.reconnect) {
-          setTimeout(open, Math.min(ch.reconnectDelay *= 1.5, 30000));
-        }
-      };
-      ch.ws.onerror = () => ch.ws.close();
-    };
-
-    ChannelRuntime._wsChannels.set(name, ch);
-    open();
-  },
-
-  send(readString, namePtr, nameLen, dataPtr, dataLen) {
-    const name = readString(namePtr, nameLen);
-    const data = readString(dataPtr, dataLen);
-    const ch = ChannelRuntime._wsChannels.get(name);
-    if (ch?.ws?.readyState === WebSocket.OPEN) {
-      ch.ws.send(data);
-    }
-  },
-
-  close(readString, namePtr, nameLen) {
-    const name = readString(namePtr, nameLen);
-    const ch = ChannelRuntime._wsChannels.get(name);
-    if (ch) {
-      ch.reconnect = false;
-      ch.ws?.close();
-      ChannelRuntime._wsChannels.delete(name);
-    }
-  },
-
-  setReconnect(readString, namePtr, nameLen, enabled) {
-    const name = readString(namePtr, nameLen);
-    const ch = ChannelRuntime._wsChannels.get(name);
-    if (ch) ch.reconnect = !!enabled;
+export const name = 'channel';
+export const runtime = ``;
+export const wasmImports = {
+  ws: {
+    connect(urlPtr, urlLen) { const ws = new WebSocket(NectarRuntime.__getString(urlPtr, urlLen)); return NectarRuntime.__registerObject(ws); },
+    send(wsId, dataPtr, dataLen) { NectarRuntime.__getObject(wsId).send(NectarRuntime.__getString(dataPtr, dataLen)); },
+    sendBinary(wsId, ptr, len) { NectarRuntime.__getObject(wsId).send(new Uint8Array(NectarRuntime.__memory.buffer, ptr, len)); },
+    close(wsId) { NectarRuntime.__getObject(wsId).close(); },
+    closeWithCode(wsId, code, reasonPtr, reasonLen) { NectarRuntime.__getObject(wsId).close(code, NectarRuntime.__getString(reasonPtr, reasonLen)); },
+    onOpen(wsId, cbIdx) { NectarRuntime.__getObject(wsId).addEventListener('open', () => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    onMessage(wsId, cbIdx) { NectarRuntime.__getObject(wsId).addEventListener('message', (e) => { const ptr = NectarRuntime.__allocString(e.data); NectarRuntime.__instance.exports.__callback_with_data(cbIdx, ptr); }); },
+    onClose(wsId, cbIdx) { NectarRuntime.__getObject(wsId).addEventListener('close', () => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    onError(wsId, cbIdx) { NectarRuntime.__getObject(wsId).addEventListener('error', () => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    getReadyState(wsId) { return NectarRuntime.__getObject(wsId).readyState; },
   },
 };
 
-const channelModule = {
-  name: 'channel',
-  runtime: ChannelRuntime,
-  wasmImports: {
-    channel: {
-      connect: ChannelRuntime.connect,
-      send: ChannelRuntime.send,
-      close: ChannelRuntime.close,
-      setReconnect: ChannelRuntime.setReconnect,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = channelModule;
+if (typeof module !== "undefined") module.exports = { name, runtime, wasmImports };

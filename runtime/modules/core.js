@@ -1,516 +1,104 @@
-// runtime/modules/core.js — Core NectarRuntime (signals, DOM, memory management)
-// This module is ALWAYS included in every build.
+// runtime/modules/core.js — Pure syscall layer for DOM, memory, timers, navigation, console
+// ALL logic (reactive graph, scheduling, routing, worker pools, agents) lives in Rust/WASM.
 
-/** Currently executing effect, used for automatic dependency tracking */
-let currentEffect = null;
-
-/**
- * Effect tracks which signals are read during its execution and
- * re-runs automatically when any dependency changes.
- */
-class Effect {
-  constructor(fn) {
-    this._fn = fn;
-    this._dependencies = new Set();
-    this._disposed = false;
-    this.run();
-  }
-
-  run() {
-    if (this._disposed) return;
-    this._dependencies.forEach((signal) => {
-      signal._subscribers.delete(this);
-    });
-    this._dependencies.clear();
-
-    const prevEffect = currentEffect;
-    currentEffect = this;
-    try {
-      this._fn();
-    } finally {
-      currentEffect = prevEffect;
-    }
-  }
-
-  addDependency(signal) {
-    this._dependencies.add(signal);
-  }
-
-  dispose() {
-    this._disposed = true;
-    this._dependencies.forEach((signal) => {
-      signal._subscribers.delete(this);
-    });
-    this._dependencies.clear();
-  }
-}
-
-class Scheduler {
-  constructor() {
-    this._pendingEffects = new Set();
-    this._scheduled = false;
-  }
-
-  schedule(effect) {
-    this._pendingEffects.add(effect);
-    if (!this._scheduled) {
-      this._scheduled = true;
-      if (typeof requestAnimationFrame !== "undefined") {
-        requestAnimationFrame(() => this.flush());
-      } else {
-        Promise.resolve().then(() => this.flush());
-      }
-    }
-  }
-
-  flush() {
-    this._scheduled = false;
-    const effects = [...this._pendingEffects];
-    this._pendingEffects.clear();
-    for (const effect of effects) {
-      effect.run();
-    }
-  }
-}
-
-const globalScheduler = new Scheduler();
-
-let batchDepth = 0;
-const batchQueue = new Set();
-
-function batch(fn) {
-  batchDepth++;
-  try {
-    fn();
-  } finally {
-    batchDepth--;
-    if (batchDepth === 0) {
-      const queued = [...batchQueue];
-      batchQueue.clear();
-      for (const effect of queued) {
-        globalScheduler.schedule(effect);
-      }
-      globalScheduler.flush();
-    }
-  }
-}
-
-function createEffect(fn) {
-  const effect = new Effect(fn);
-  return () => effect.dispose();
-}
-
-function createMemo(fn) {
-  let cachedValue;
-  let dirty = true;
-
-  const memo = {
-    _subscribers: new Set(),
-    get() {
-      if (currentEffect) {
-        currentEffect.addDependency(memo);
-        memo._subscribers.add(currentEffect);
-      }
-      if (dirty) {
-        const prevEffect = currentEffect;
-        currentEffect = memoEffect;
-        try {
-          cachedValue = fn();
-        } finally {
-          currentEffect = prevEffect;
-        }
-        dirty = false;
-      }
-      return cachedValue;
-    },
-  };
-
-  const memoEffect = {
-    _dependencies: new Set(),
-    _disposed: false,
-    run() {
-      dirty = true;
-      for (const sub of memo._subscribers) {
-        if (batchDepth > 0) {
-          batchQueue.add(sub);
-        } else {
-          globalScheduler.schedule(sub);
-        }
-      }
-    },
-    addDependency(signal) {
-      this._dependencies.add(signal);
-    },
-    dispose() {
-      this._disposed = true;
-      this._dependencies.forEach((signal) => {
-        signal._subscribers.delete(this);
-      });
-      this._dependencies.clear();
-    },
-  };
-
-  const prevEffect = currentEffect;
-  currentEffect = memoEffect;
-  try {
-    cachedValue = fn();
-    dirty = false;
-  } finally {
-    currentEffect = prevEffect;
-  }
-
-  return memo;
-}
-
-function hashString(str) {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0x7fffffff;
-  }
-  return hash.toString(36);
-}
-
-class AgentManager {
-  constructor(runtime) {
-    this.runtime = runtime;
-    this.tools = new Map();
-    this.histories = new Map();
-    this.streaming = false;
-  }
-
-  registerTool(name, description, schema, funcIdx) {
-    this.tools.set(name, { description, schema, funcIdx });
-  }
-
-  getToolDefinitions() {
-    const defs = [];
-    for (const [name, tool] of this.tools) {
-      defs.push({
-        type: 'function',
-        function: { name, description: tool.description, parameters: tool.schema },
-      });
-    }
-    return defs;
-  }
-
-  dispatchToolCall(toolName, argsJson) {
-    const tool = this.tools.get(toolName);
-    if (!tool) { console.warn(`Agent tool not found: ${toolName}`); return null; }
-    try {
-      const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : argsJson;
-      const exportName = `__tool_${toolName}`;
-      const allExports = Object.keys(this.runtime.instance.exports);
-      const matchingExport = allExports.find(e => e.endsWith(exportName) || e.includes(`_${toolName}`));
-      if (matchingExport) {
-        const paramValues = Object.values(args).map(v => {
-          if (typeof v === 'string') { const { ptr } = this.runtime.writeString(v); return ptr; }
-          return typeof v === 'number' ? v : 0;
-        });
-        return this.runtime.instance.exports[matchingExport](...paramValues);
-      }
-    } catch (e) { console.error(`Error dispatching tool ${toolName}:`, e); }
-    return null;
-  }
-
-  addMessage(agentName, role, content) {
-    if (!this.histories.has(agentName)) this.histories.set(agentName, []);
-    this.histories.get(agentName).push({ role, content });
-  }
-
-  getMessages(agentName, systemPrompt) {
-    const history = this.histories.get(agentName) || [];
-    if (systemPrompt) return [{ role: 'system', content: systemPrompt }, ...history];
-    return [...history];
-  }
-
-  clearHistory(agentName) { this.histories.delete(agentName); }
-}
-
-class Router {
-  constructor(runtime) {
-    this.runtime = runtime;
-    this.routes = [];
-    this.fallbackMount = null;
-    this.currentDispose = null;
-    this.currentParams = {};
-    this.currentPath = typeof location !== "undefined" ? location.pathname : "/";
-    this.outletHandle = null;
-  }
-
-  _parsePattern(pattern) {
-    const paramNames = [];
-    let regexStr = "^";
-    const segments = pattern.split("/");
-    for (const seg of segments) {
-      if (seg === "") continue;
-      regexStr += "/";
-      if (seg.startsWith(":")) { paramNames.push(seg.slice(1)); regexStr += "([^/]+)"; }
-      else if (seg === "*") { paramNames.push("_wildcard"); regexStr += "(.*)"; }
-      else { regexStr += seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
-    }
-    if (regexStr === "^") regexStr += "/";
-    regexStr += "$";
-    return { regex: new RegExp(regexStr), paramNames };
-  }
-
-  registerRoute(path, mountFnIdx) {
-    const { regex, paramNames } = this._parsePattern(path);
-    this.routes.push({ path, regex, paramNames, mountFnName: `__route_mount_${mountFnIdx}` });
-  }
-
-  init(routesConfigJson) {
-    if (typeof window !== "undefined") {
-      window.addEventListener("popstate", () => { this.currentPath = location.pathname; this._matchAndMount(); });
-    }
-    this._matchAndMount();
-  }
-
-  navigate(path) {
-    if (path === this.currentPath) return;
-    this.currentPath = path;
-    if (typeof history !== "undefined") history.pushState(null, "", path);
-    this._matchAndMount();
-  }
-
-  getParam(name) { return this.currentParams[name] || ""; }
-
-  async _matchAndMount() {
-    const path = this.currentPath;
-    for (const route of this.routes) {
-      const match = path.match(route.regex);
-      if (match) {
-        this.currentParams = {};
-        route.paramNames.forEach((name, i) => { this.currentParams[name] = match[i + 1] || ""; });
-        this._unmountCurrent();
-        const mountFn = this.runtime.instance?.exports[route.mountFnName];
-        if (mountFn) {
-          const outletEl = this.runtime.elements.get(this.outletHandle);
-          if (outletEl) outletEl.innerHTML = "";
-          mountFn(this.outletHandle || 1);
-        }
-        return;
-      }
-    }
-    this._unmountCurrent();
-    if (this.fallbackMount) {
-      const fallbackFn = this.runtime.instance?.exports[this.fallbackMount];
-      if (fallbackFn) {
-        const outletEl = this.runtime.elements.get(this.outletHandle);
-        if (outletEl) outletEl.innerHTML = "";
-        fallbackFn(this.outletHandle || 1);
-      }
-    }
-  }
-
-  _unmountCurrent() {
-    if (this.currentDispose) { this.currentDispose(); this.currentDispose = null; }
-  }
-}
-
-class WorkerPool {
-  constructor(wasmBytes, importTemplate, poolSize = 4) {
-    this._wasmBytes = wasmBytes;
-    this._importTemplate = importTemplate;
-    this._poolSize = poolSize;
-    this._workers = [];
-    this._available = [];
-    this._taskQueue = [];
-    this._nextTaskId = 1;
-    this._pendingTasks = new Map();
-  }
-
-  async _initWorker() {
-    const workerScript = `
-      let wasmInstance = null;
-      let wasmMemory = null;
-      self.onmessage = async function(e) {
-        const { type, taskId, funcName, args, wasmBytes } = e.data;
-        if (type === 'init') {
-          const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
-          const importObject = { env: { memory } };
-          const { instance } = await WebAssembly.instantiate(wasmBytes, importObject);
-          wasmInstance = instance;
-          wasmMemory = memory;
-          self.postMessage({ type: 'ready' });
-          return;
-        }
-        if (type === 'exec') {
-          try {
-            const fn = wasmInstance.exports[funcName];
-            if (!fn) { self.postMessage({ type: 'error', taskId, error: 'Function not found: ' + funcName }); return; }
-            const result = fn(...(args || []));
-            self.postMessage({ type: 'result', taskId, result });
-          } catch (err) { self.postMessage({ type: 'error', taskId, error: err.message }); }
-          return;
-        }
-        if (type === 'execIdx') {
-          try {
-            const table = wasmInstance.exports.__indirect_function_table;
-            const fn = table ? table.get(e.data.funcIdx) : null;
-            if (!fn) { self.postMessage({ type: 'error', taskId, error: 'Function index not found' }); return; }
-            const result = fn();
-            self.postMessage({ type: 'result', taskId, result });
-          } catch (err) { self.postMessage({ type: 'error', taskId, error: err.message }); }
-          return;
-        }
-      };
-    `;
-    const blob = new Blob([workerScript], { type: "application/javascript" });
-    const url = URL.createObjectURL(blob);
-    const worker = new Worker(url);
-    URL.revokeObjectURL(url);
-
-    await new Promise((resolve, reject) => {
-      worker.onmessage = (e) => { if (e.data.type === "ready") resolve(); };
-      worker.onerror = reject;
-      worker.postMessage({ type: "init", wasmBytes: this._wasmBytes });
-    });
-
-    worker.onmessage = (e) => {
-      const { type, taskId, result, error } = e.data;
-      if (type === "result" || type === "error") {
-        const pending = this._pendingTasks.get(taskId);
-        if (pending) {
-          this._pendingTasks.delete(taskId);
-          if (type === "result") pending.resolve(result);
-          else pending.reject(new Error(error));
-        }
-        this._available.push(worker);
-        this._drainQueue();
-      }
-    };
-    return worker;
-  }
-
-  async _getWorker() {
-    if (this._available.length > 0) return this._available.pop();
-    if (this._workers.length < this._poolSize) {
-      const worker = await this._initWorker();
-      this._workers.push(worker);
-      return worker;
-    }
-    return new Promise((resolve) => { this._taskQueue.push(resolve); });
-  }
-
-  _drainQueue() {
-    while (this._taskQueue.length > 0 && this._available.length > 0) {
-      const resolve = this._taskQueue.shift();
-      resolve(this._available.pop());
-    }
-  }
-
-  async spawn(funcName, args) {
-    const worker = await this._getWorker();
-    const taskId = this._nextTaskId++;
-    return new Promise((resolve, reject) => {
-      this._pendingTasks.set(taskId, { resolve, reject });
-      worker.postMessage({ type: "exec", taskId, funcName, args });
-    });
-  }
-
-  async spawnByIndex(funcIdx) {
-    const worker = await this._getWorker();
-    const taskId = this._nextTaskId++;
-    return new Promise((resolve, reject) => {
-      this._pendingTasks.set(taskId, { resolve, reject });
-      worker.postMessage({ type: "execIdx", taskId, funcIdx });
-    });
-  }
-
-  terminate() {
-    for (const worker of this._workers) worker.terminate();
-    this._workers = [];
-    this._available = [];
-    this._pendingTasks.clear();
-  }
-}
-
-/**
- * NectarRuntime — the core runtime class that bridges WASM to the DOM.
- * Handles signals, DOM operations, memory management, HTTP, routing,
- * styles, animations, accessibility, streaming, media, and web APIs.
- */
-class NectarRuntime {
-  constructor() {
-    this.instance = null;
-    this.memory = null;
-    this.elements = new Map();
-    this.nextHandle = 1;
-    this.signals = new Map();
-    this.nextSignalId = 1;
-    this.nextFetchId = 1;
-    this.pendingFetches = new Map();
-    this.workerPool = null;
-    this.agentManager = new AgentManager(this);
-    this.channels = new Map();
-    this.nextChannelId = 1;
-    this._wasmBytes = null;
-    this.router = new Router(this);
-  }
-
-  _createSignal(initialValue) {
-    const signal = {
-      _value: initialValue,
-      _subscribers: new Set(),
-      get() {
-        if (currentEffect) { currentEffect.addDependency(signal); signal._subscribers.add(currentEffect); }
-        return signal._value;
-      },
-      set(newValue) {
-        if (signal._value !== newValue) {
-          signal._value = newValue;
-          for (const sub of signal._subscribers) {
-            if (batchDepth > 0) batchQueue.add(sub);
-            else globalScheduler.schedule(sub);
-          }
-        }
-      },
-    };
-    return signal;
-  }
-
-  readString(ptr, len) {
-    const bytes = new Uint8Array(this.memory.buffer, ptr, len);
-    return new TextDecoder().decode(bytes);
-  }
-
-  writeString(str) {
-    const bytes = new TextEncoder().encode(str);
-    const ptr = this._allocWasm(bytes.length);
-    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
-    return { ptr, len: bytes.length };
-  }
-
-  _allocWasm(size) {
-    if (this.instance && this.instance.exports.alloc) return this.instance.exports.alloc(size);
-    const ptr = this._heapPtr || 4096;
-    this._heapPtr = ptr + size;
-    const needed = Math.ceil((ptr + size) / 65536);
-    const current = this.memory.buffer.byteLength / 65536;
-    if (needed > current) this.memory.grow(needed - current);
-    return ptr;
-  }
-}
-
-const coreModule = {
-  name: 'core',
-  runtime: {
-    NectarRuntime,
-    AgentManager,
-    WorkerPool,
-    Router,
-    Effect,
-    Scheduler,
-    createEffect,
-    createMemo,
-    batch,
-    hashString,
-    currentEffect: () => currentEffect,
-    batchDepth: () => batchDepth,
-    batchQueue,
-    globalScheduler,
-  },
-  wasmImports: {}
+// Element registry — thin object pool for DOM references
+const NectarRuntime = {
+  __elements: [null], // index 0 = null sentinel
+  __objects: [null],
+  __callbacks: [],
+  __memory: null,
+  __instance: null,
+  __decoder: new TextDecoder(),
+  __encoder: new TextEncoder(),
+  __registerElement(el) { if (!el) return 0; this.__elements.push(el); return this.__elements.length - 1; },
+  __getElement(id) { return this.__elements[id]; },
+  __registerObject(obj) { if (!obj) return 0; this.__objects.push(obj); return this.__objects.length - 1; },
+  __getObject(id) { return this.__objects[id]; },
+  __registerNodeList(nl) { const ids = []; for (let i = 0; i < nl.length; i++) ids.push(this.__registerElement(nl[i])); return ids; },
+  __getString(ptr, len) { return this.__decoder.decode(new Uint8Array(this.__memory.buffer, ptr, len)); },
+  __allocString(str) { const bytes = this.__encoder.encode(str); const ptr = this.__instance.exports.alloc(bytes.length); new Uint8Array(this.__memory.buffer, ptr, bytes.length).set(bytes); return ptr; },
+  __init(instance) { this.__instance = instance; this.__memory = instance.exports.memory; },
 };
 
-if (typeof module !== "undefined") module.exports = coreModule;
+export const name = 'core';
+export const runtime = ``;
+export const wasmImports = {
+  dom: {
+    createElement(tagPtr, tagLen) { return NectarRuntime.__registerElement(document.createElement(NectarRuntime.__getString(tagPtr, tagLen))); },
+    createTextNode(textPtr, textLen) { return NectarRuntime.__registerElement(document.createTextNode(NectarRuntime.__getString(textPtr, textLen))); },
+    setText(elId, textPtr, textLen) { NectarRuntime.__getElement(elId).textContent = NectarRuntime.__getString(textPtr, textLen); },
+    appendChild(parentId, childId) { NectarRuntime.__getElement(parentId).appendChild(NectarRuntime.__getElement(childId)); },
+    removeChild(parentId, childId) { NectarRuntime.__getElement(parentId).removeChild(NectarRuntime.__getElement(childId)); },
+    setAttribute(elId, kPtr, kLen, vPtr, vLen) { NectarRuntime.__getElement(elId).setAttribute(NectarRuntime.__getString(kPtr, kLen), NectarRuntime.__getString(vPtr, vLen)); },
+    removeAttribute(elId, kPtr, kLen) { NectarRuntime.__getElement(elId).removeAttribute(NectarRuntime.__getString(kPtr, kLen)); },
+    addEventListener(elId, evtPtr, evtLen, cbIdx) { NectarRuntime.__getElement(elId).addEventListener(NectarRuntime.__getString(evtPtr, evtLen), () => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    removeEventListener(elId, evtPtr, evtLen, cbIdx) { NectarRuntime.__getElement(elId).removeEventListener(NectarRuntime.__getString(evtPtr, evtLen), NectarRuntime.__callbacks[cbIdx]); },
+    getElementById(idPtr, idLen) { return NectarRuntime.__registerElement(document.getElementById(NectarRuntime.__getString(idPtr, idLen))); },
+    querySelector(selPtr, selLen) { return NectarRuntime.__registerElement(document.querySelector(NectarRuntime.__getString(selPtr, selLen))); },
+    querySelectorAll(selPtr, selLen) { return NectarRuntime.__registerNodeList(document.querySelectorAll(NectarRuntime.__getString(selPtr, selLen))); },
+    insertBefore(parentId, newId, refId) { NectarRuntime.__getElement(parentId).insertBefore(NectarRuntime.__getElement(newId), NectarRuntime.__getElement(refId)); },
+    replaceChild(parentId, newId, oldId) { NectarRuntime.__getElement(parentId).replaceChild(NectarRuntime.__getElement(newId), NectarRuntime.__getElement(oldId)); },
+    setInnerHTML(elId, htmlPtr, htmlLen) { NectarRuntime.__getElement(elId).innerHTML = NectarRuntime.__getString(htmlPtr, htmlLen); },
+    setStyle(elId, propPtr, propLen, valPtr, valLen) { NectarRuntime.__getElement(elId).style.setProperty(NectarRuntime.__getString(propPtr, propLen), NectarRuntime.__getString(valPtr, valLen)); },
+    classAdd(elId, clsPtr, clsLen) { NectarRuntime.__getElement(elId).classList.add(NectarRuntime.__getString(clsPtr, clsLen)); },
+    classRemove(elId, clsPtr, clsLen) { NectarRuntime.__getElement(elId).classList.remove(NectarRuntime.__getString(clsPtr, clsLen)); },
+    classToggle(elId, clsPtr, clsLen) { NectarRuntime.__getElement(elId).classList.toggle(NectarRuntime.__getString(clsPtr, clsLen)); },
+    getBody() { return NectarRuntime.__registerElement(document.body); },
+    getHead() { return NectarRuntime.__registerElement(document.head); },
+    getRoot() { return NectarRuntime.__registerElement(document.getElementById('app') || document.body); },
+  },
+  mem: {
+    getString(ptr, len) { return NectarRuntime.__getString(ptr, len); },
+    allocString(strPtr, strLen) { return NectarRuntime.__allocString(NectarRuntime.__getString(strPtr, strLen)); },
+    readI32(ptr) { return new DataView(NectarRuntime.__memory.buffer).getInt32(ptr, true); },
+    writeI32(ptr, val) { new DataView(NectarRuntime.__memory.buffer).setInt32(ptr, val, true); },
+    readF64(ptr) { return new DataView(NectarRuntime.__memory.buffer).getFloat64(ptr, true); },
+    writeF64(ptr, val) { new DataView(NectarRuntime.__memory.buffer).setFloat64(ptr, val, true); },
+  },
+  timer: {
+    setTimeout(cbIdx, ms) { return setTimeout(() => NectarRuntime.__instance.exports.__callback(cbIdx), ms); },
+    clearTimeout(id) { clearTimeout(id); },
+    setInterval(cbIdx, ms) { return setInterval(() => NectarRuntime.__instance.exports.__callback(cbIdx), ms); },
+    clearInterval(id) { clearInterval(id); },
+    requestAnimationFrame(cbIdx) { return requestAnimationFrame(() => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    cancelAnimationFrame(id) { cancelAnimationFrame(id); },
+    now() { return performance.now(); },
+  },
+  nav: {
+    pushState(urlPtr, urlLen) { history.pushState(null, '', NectarRuntime.__getString(urlPtr, urlLen)); },
+    replaceState(urlPtr, urlLen) { history.replaceState(null, '', NectarRuntime.__getString(urlPtr, urlLen)); },
+    getHref() { return NectarRuntime.__allocString(location.href); },
+    getPathname() { return NectarRuntime.__allocString(location.pathname); },
+    getSearch() { return NectarRuntime.__allocString(location.search); },
+    getHash() { return NectarRuntime.__allocString(location.hash); },
+    onPopState(cbIdx) { window.addEventListener('popstate', () => NectarRuntime.__instance.exports.__callback(cbIdx)); },
+    setHref(urlPtr, urlLen) { location.href = NectarRuntime.__getString(urlPtr, urlLen); },
+  },
+  console: {
+    log(ptr, len) { console.log(NectarRuntime.__getString(ptr, len)); },
+    warn(ptr, len) { console.warn(NectarRuntime.__getString(ptr, len)); },
+    error(ptr, len) { console.error(NectarRuntime.__getString(ptr, len)); },
+    debug(ptr, len) { console.debug(NectarRuntime.__getString(ptr, len)); },
+  },
+  net: {
+    fetch(urlPtr, urlLen, optsPtr, optsLen) {
+      const url = NectarRuntime.__getString(urlPtr, urlLen);
+      const opts = optsLen > 0 ? JSON.parse(NectarRuntime.__getString(optsPtr, optsLen)) : {};
+      const id = NectarRuntime.__registerObject(fetch(url, opts));
+      return id;
+    },
+  },
+  observe: {
+    matchMedia(queryPtr, queryLen) { return matchMedia(NectarRuntime.__getString(queryPtr, queryLen)).matches ? 1 : 0; },
+    intersectionObserver(cbIdx, optsPtr, optsLen) {
+      const opts = optsLen > 0 ? JSON.parse(NectarRuntime.__getString(optsPtr, optsLen)) : {};
+      const obs = new IntersectionObserver((entries) => NectarRuntime.__instance.exports.__callback(cbIdx), opts);
+      return NectarRuntime.__registerObject(obs);
+    },
+    observe(obsId, elId) { NectarRuntime.__getObject(obsId).observe(NectarRuntime.__getElement(elId)); },
+    unobserve(obsId, elId) { NectarRuntime.__getObject(obsId).unobserve(NectarRuntime.__getElement(elId)); },
+    disconnect(obsId) { NectarRuntime.__getObject(obsId).disconnect(); },
+  },
+};
+
+if (typeof module !== "undefined") module.exports = { name, runtime, wasmImports, NectarRuntime };

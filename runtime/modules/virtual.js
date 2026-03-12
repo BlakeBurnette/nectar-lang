@@ -1,106 +1,50 @@
-// runtime/modules/virtual.js — Virtualized list runtime for large datasets
+// runtime/modules/virtual.js — Virtual list DOM syscall layer (logic in Rust/WASM)
 
-const VirtualRuntime = {
-  _lists: new Map(),
-  _nextId: 1,
+const _cbs = new Map();
 
-  createList(readString, containerPtr, containerLen, totalItems, itemHeight, buffer) {
-    const selector = readString(containerPtr, containerLen);
-    const id = VirtualRuntime._nextId++;
-    const container = document.querySelector(selector);
-    if (!container) return id;
+const wasmImports = {
+  virtual: {
+    createContainer(parentId, height) {
+      const container = document.createElement('div');
+      container.style.overflow = 'auto';
+      container.style.position = 'relative';
+      container.style.height = `${height}px`;
+      document.getElementById(parentId).appendChild(container);
+      return container;
+    },
 
-    const config = {
-      totalItems,
-      itemHeight,
-      buffer: buffer || 5,
-      container,
-      renderedItems: new Map(),
-    };
-    const totalHeight = totalItems * itemHeight;
+    appendItem(containerId, elId, top) {
+      const el = document.createElement('div');
+      el.id = elId;
+      el.style.position = 'absolute';
+      el.style.transform = `translateY(${top}px)`;
+      el.style.width = '100%';
+      document.getElementById(containerId).appendChild(el);
+    },
 
-    // Create scroll container
-    container.style.overflow = 'auto';
-    container.style.position = 'relative';
+    removeItem(elId) {
+      const el = document.getElementById(elId);
+      el.parentNode.removeChild(el);
+    },
 
-    const spacer = document.createElement('div');
-    spacer.style.height = `${totalHeight}px`;
-    spacer.style.position = 'relative';
-    container.appendChild(spacer);
+    setContainerHeight(containerId, height) {
+      document.getElementById(containerId).style.height = `${height}px`;
+    },
 
-    config.spacer = spacer;
-    config.viewport = container;
-    VirtualRuntime._lists.set(id, config);
+    onScroll(containerId, cbIdx) {
+      document.getElementById(containerId).addEventListener('scroll', () => {
+        _cbs.get(cbIdx)?.();
+      });
+    },
 
-    container.addEventListener('scroll', () => VirtualRuntime._render(id));
-    VirtualRuntime._render(id);
+    getScrollTop(containerId) {
+      return document.getElementById(containerId).scrollTop;
+    },
 
-    return id;
-  },
-
-  _render(id) {
-    const config = VirtualRuntime._lists.get(id);
-    if (!config) return;
-
-    const scrollTop = config.viewport.scrollTop;
-    const viewHeight = config.viewport.clientHeight;
-    const startIdx = Math.max(0, Math.floor(scrollTop / config.itemHeight) - config.buffer);
-    const endIdx = Math.min(
-      config.totalItems - 1,
-      Math.ceil((scrollTop + viewHeight) / config.itemHeight) + config.buffer
-    );
-
-    // Remove items outside range
-    for (const [idx, el] of config.renderedItems) {
-      if (idx < startIdx || idx > endIdx) {
-        el.remove();
-        config.renderedItems.delete(idx);
-      }
-    }
-
-    // Add items inside range
-    for (let i = startIdx; i <= endIdx; i++) {
-      if (!config.renderedItems.has(i)) {
-        const el = document.createElement('div');
-        el.style.position = 'absolute';
-        el.style.top = `${i * config.itemHeight}px`;
-        el.style.height = `${config.itemHeight}px`;
-        el.style.width = '100%';
-        el.setAttribute('data-virtual-index', i);
-
-        // Callback to WASM for rendering content
-        if (typeof instance !== 'undefined' && instance.exports.__virtual_render_item) {
-          instance.exports.__virtual_render_item(id, i);
-        } else {
-          el.textContent = `Item ${i}`;
-        }
-
-        config.spacer.appendChild(el);
-        config.renderedItems.set(i, el);
-      }
-    }
-  },
-
-  updateViewport(_id, _scrollTop, _viewHeight) {
-    VirtualRuntime._render(_id);
-  },
-
-  scrollTo(id, index) {
-    const config = VirtualRuntime._lists.get(id);
-    if (config) config.viewport.scrollTop = index * config.itemHeight;
+    getClientHeight(containerId) {
+      return document.getElementById(containerId).clientHeight;
+    },
   },
 };
 
-const virtualModule = {
-  name: 'virtual',
-  runtime: VirtualRuntime,
-  wasmImports: {
-    virtual: {
-      createList: VirtualRuntime.createList,
-      updateViewport: VirtualRuntime.updateViewport,
-      scrollTo: VirtualRuntime.scrollTo,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = virtualModule;
+module.exports = { name: 'virtual', runtime: { _cbs }, wasmImports };

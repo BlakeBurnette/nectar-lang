@@ -1,53 +1,36 @@
-// runtime/modules/shortcuts.js — Keyboard shortcut runtime
+// runtime/modules/shortcuts.js — Keyboard syscall layer (logic in Rust/WASM)
 
-const ShortcutRuntime = {
-  _shortcuts: new Map(),
-  _listening: false,
+const _cbs = new Map();
+const _handlers = new Map();
+const _events = new Map();
+let _nextEvent = 1;
 
-  register(readString, keysPtr, keysLen, callbackId, _componentLen) {
-    const keys = readString(keysPtr, keysLen).toLowerCase();
-    ShortcutRuntime._shortcuts.set(keys, callbackId);
+const wasmImports = {
+  shortcuts: {
+    addKeydownListener(cbIdx) {
+      const handler = e => {
+        const eid = _nextEvent++;
+        _events.set(eid, e);
+        _cbs.get(cbIdx)?.(eid, e.key, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
+      };
+      document.addEventListener('keydown', handler);
+      _handlers.set(cbIdx, handler);
+    },
 
-    if (!ShortcutRuntime._listening) {
-      document.addEventListener('keydown', ShortcutRuntime._handler);
-      ShortcutRuntime._listening = true;
-    }
-  },
+    removeKeydownListener(cbIdx) {
+      document.removeEventListener('keydown', _handlers.get(cbIdx));
+      _handlers.delete(cbIdx);
+    },
 
-  unregister(readString, keysPtr, keysLen) {
-    const keys = readString(keysPtr, keysLen).toLowerCase();
-    ShortcutRuntime._shortcuts.delete(keys);
-  },
+    getKeyEvent(eventId) {
+      const e = _events.get(eventId);
+      return { key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey };
+    },
 
-  _handler(e) {
-    const parts = [];
-    if (e.ctrlKey || e.metaKey) parts.push('ctrl');
-    if (e.shiftKey) parts.push('shift');
-    if (e.altKey) parts.push('alt');
-    const key = e.key.toLowerCase();
-    if (!['control', 'shift', 'alt', 'meta'].includes(key)) parts.push(key);
-    const combo = parts.join('+');
-
-    const callbackId = ShortcutRuntime._shortcuts.get(combo);
-    if (callbackId !== undefined) {
-      e.preventDefault();
-      // Invoke the WASM callback
-      if (typeof instance !== 'undefined' && instance.exports[`__shortcut_${callbackId}`]) {
-        instance.exports[`__shortcut_${callbackId}`]();
-      }
-    }
+    preventDefault(eventId) {
+      _events.get(eventId).preventDefault();
+    },
   },
 };
 
-const shortcutsModule = {
-  name: 'shortcuts',
-  runtime: ShortcutRuntime,
-  wasmImports: {
-    shortcuts: {
-      register: ShortcutRuntime.register,
-      unregister: ShortcutRuntime.unregister,
-    }
-  }
-};
-
-if (typeof module !== "undefined") module.exports = shortcutsModule;
+module.exports = { name: 'shortcuts', runtime: { _cbs, _handlers, _events }, wasmImports };

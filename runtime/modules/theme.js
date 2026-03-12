@@ -1,85 +1,35 @@
-// runtime/modules/theme.js — opt-in theming runtime
+// runtime/modules/theme.js — Theme syscall layer (logic in Rust/WASM)
 
-const ThemeRuntime = {
-  _themes: {},
-  _current: null,
+const _cbs = new Map();
 
-  init(readString, namePtr, nameLen, configPtr, configLen) {
-    const name = readString(namePtr, nameLen);
-    const config = JSON.parse(readString(configPtr, configLen));
-    ThemeRuntime._themes = config;
+const wasmImports = {
+  theme: {
+    getPreferredColorScheme() {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 1 : 0;
+    },
 
-    // Check saved preference, then OS preference
-    const saved = localStorage.getItem('nectar-theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initial = saved || (prefersDark ? 'dark' : 'light');
-    ThemeRuntime._apply(initial);
+    onColorSchemeChange(cbIdx) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+        _cbs.get(cbIdx)?.(e.matches ? 1 : 0);
+      });
+    },
 
-    // Listen for OS preference changes
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-      if (!localStorage.getItem('nectar-theme')) {
-        ThemeRuntime._apply(e.matches ? 'dark' : 'light');
-      }
-    });
-  },
+    setDocAttribute(name, value) {
+      document.documentElement.setAttribute(name, value);
+    },
 
-  toggle() {
-    const next = ThemeRuntime._current === 'light' ? 'dark' : 'light';
-    ThemeRuntime.set(next);
-  },
+    setCssVar(name, value) {
+      document.documentElement.style.setProperty(name, value);
+    },
 
-  set(themePtr, themeLen) {
-    const theme = typeof themePtr === 'string' ? themePtr : readString(themePtr, themeLen);
-    localStorage.setItem('nectar-theme', theme);
-    ThemeRuntime._apply(theme);
-  },
+    getStoredTheme() {
+      return localStorage.getItem('nectar-theme');
+    },
 
-  getCurrent() { return ThemeRuntime._current; },
-
-  _apply(mode) {
-    ThemeRuntime._current = mode;
-    let vars = ThemeRuntime._themes[mode] || {};
-
-    // Auto-generate dark theme from light if darkAuto is enabled
-    if (mode === 'dark' && !ThemeRuntime._themes.dark && ThemeRuntime._themes.darkAuto && ThemeRuntime._themes.light) {
-      vars = ThemeRuntime._generateDark(ThemeRuntime._themes.light);
-    }
-
-    const root = document.documentElement;
-    for (const [key, value] of Object.entries(vars)) {
-      root.style.setProperty(`--theme-${key}`, value);
-    }
-    root.setAttribute('data-theme', mode);
-  },
-
-  // Auto-generate dark theme from light by flipping luminance
-  _generateDark(light) {
-    const dark = {};
-    for (const [key, value] of Object.entries(light)) {
-      if (typeof value === 'string' && value.startsWith('#') && value.length === 7) {
-        const r = parseInt(value.slice(1,3), 16);
-        const g = parseInt(value.slice(3,5), 16);
-        const b = parseInt(value.slice(5,7), 16);
-        // Invert luminance, preserve hue
-        const dr = 255 - r, dg = 255 - g, db = 255 - b;
-        dark[key] = `#${dr.toString(16).padStart(2,'0')}${dg.toString(16).padStart(2,'0')}${db.toString(16).padStart(2,'0')}`;
-      } else {
-        dark[key] = value;
-      }
-    }
-    return dark;
+    storeTheme(theme) {
+      localStorage.setItem('nectar-theme', theme);
+    },
   },
 };
 
-module.exports = {
-  name: 'theme',
-  runtime: ThemeRuntime,
-  wasmImports: {
-    theme: {
-      init: ThemeRuntime.init,
-      toggle: ThemeRuntime.toggle,
-      set: ThemeRuntime.set,
-      getCurrent: ThemeRuntime.getCurrent,
-    }
-  }
-};
+module.exports = { name: 'theme', runtime: { _cbs }, wasmImports };
