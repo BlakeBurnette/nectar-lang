@@ -177,29 +177,26 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
         // search, pagination logic) are pure WASM — compiled from Rust into the
         // binary. They do NOT need JS runtime modules.
         // Only features that need browser APIs get JS modules:
-        //   - toast/skeleton: need DOM syscalls (already in core)
-        //   - format (locale): needs Intl API (intl.js bridge)
-        //   - debounce/throttle: need setTimeout (already in core)
+        // NOTE: Most std lib features are pure WASM — compiled from Rust into the
+        // binary. They do NOT need JS runtime modules. Features that need browser
+        // APIs use the existing core.js syscalls (DOM, timers, etc.).
+        // No std lib feature has its own JS module.
         Expr::FnCall { callee, args, .. } => {
-            // Detect Intl-dependent formatting (needs intl.js bridge)
+            // Detect features that need specific JS runtime modules (non-std-lib)
             if let Expr::FieldAccess { object, .. } = &**callee {
                 if let Expr::Ident(ref ns) = **object {
                     match ns.as_str() {
-                        "format" => { modules.insert("intl".to_string()); }
-                        "toast" => { /* uses core DOM syscalls, no extra JS */ }
-                        "skeleton" => { /* uses core DOM syscalls, no extra JS */ }
                         "theme" => { modules.insert("theme".to_string()); }
                         "auth" => { modules.insert("auth".to_string()); }
                         "upload" => { modules.insert("upload".to_string()); }
                         "db" => { modules.insert("db".to_string()); }
                         "animate" => { modules.insert("animate".to_string()); }
                         "responsive" => { modules.insert("responsive".to_string()); }
-                        "share" => { modules.insert("share".to_string()); }
-                        // Pure WASM namespaces — no JS runtime modules needed:
-                        // collections, url, mask, search, pagination, data_table,
-                        // datepicker, skeleton, toast, combobox, chart, editor,
-                        // image, csv, maps, syntax, media, qr, wizard,
-                        // debounce, throttle
+                        // ALL std lib namespaces are pure WASM — no JS modules:
+                        // format, toast, skeleton, collections, url, mask, search,
+                        // pagination, data_table, datepicker, combobox, chart, editor,
+                        // image, csv, maps, syntax, media, qr, share, wizard,
+                        // debounce, throttle, crypto, BigDecimal, clipboard
                         _ => {}
                     }
                 }

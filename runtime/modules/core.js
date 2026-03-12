@@ -380,6 +380,19 @@ export const wasmImports = {
     unobserve(obsId, elId) { NectarRuntime.__getObject(obsId).unobserve(NectarRuntime.__getElement(elId)); },
     disconnect(obsId) { NectarRuntime.__getObject(obsId).disconnect(); },
   },
+
+  share: {
+    canShare() { return navigator.share ? 1 : 0; },
+    nativeShare(titlePtr, titleLen, textPtr, textLen, urlPtr, urlLen) {
+      if (!navigator.share) return 0;
+      navigator.share({
+        title: NectarRuntime.__getString(titlePtr, titleLen),
+        text: NectarRuntime.__getString(textPtr, textLen),
+        url: NectarRuntime.__getString(urlPtr, urlLen),
+      }).catch(() => {});
+      return 1;
+    },
+  },
 };
 
 if (typeof module !== "undefined") module.exports = { name, runtime, wasmImports, NectarRuntime };

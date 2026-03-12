@@ -444,12 +444,17 @@ impl WasmCodegen {
         self.line(";; toast, skeleton — built on createElement/appendChild/setAttribute");
         self.line(";; These are WASM functions, not JS modules.");
 
-        // Format needs one thin JS bridge for Intl locale data
+        // Format — pure WASM (locale tables compiled from Rust, no Intl API)
         self.line("");
-        self.line(";; Standard library — format (thin Intl bridge for locale data)");
-        self.line("(import \"intl\" \"formatNumber\" (func $intl_format_number (param f64 i32 i32) (result i32)))");
-        self.line("(import \"intl\" \"formatCurrency\" (func $intl_format_currency (param f64 i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"intl\" \"formatRelativeTime\" (func $intl_format_relative_time (param i32 i32 i32 i32 i32) (result i32)))");
+        self.line(";; Standard library — format (pure WASM, no JS bridge)");
+        self.line(";; format_number, format_currency, format_relative_time, format_compact,");
+        self.line(";; format_percent, format_bytes, format_ordinal");
+        self.line(";; Locale data (decimal separators, currency symbols) compiled into WASM binary.");
+
+        // Share — syscall lives in core.js, no separate module
+        self.line("");
+        self.line(";; Share — uses core share syscalls (navigator.share)");
+        self.line(";; share_can_share, share_native — routed through core.js share namespace");
 
         // Allocator (bump allocator for now)
         self.line("");
