@@ -1,6 +1,7 @@
 // runtime/modules/core.js — Nectar unified syscall layer
 // ONE file. ONLY browser APIs that WASM physically cannot call.
 // Everything else (logic, state, routing, components, formatting, crypto) is pure Rust/WASM.
+// Namespaces that are WASM-internal (no JS bridge): signal, string, flags, cache, permissions, form, lifecycle, contract
 //
 // DOM strategy:
 //   - Initial render: WASM builds HTML string in linear memory, single mount() sets innerHTML
@@ -281,10 +282,6 @@ export const wasmImports = {
     // Clipboard
     clipboardWrite(ptr, len) { navigator.clipboard.writeText(R.__getString(ptr, len)).catch(() => {}); },
     clipboardRead(cbIdx) { navigator.clipboard.readText().then(t => { R.__cbData(cbIdx, R.__allocString(t)); }).catch(() => R.__cbData(cbIdx, 0)); },
-    // Timers (alternate entry matching codegen)
-    setTimeout(cbIdx, ms) { return setTimeout(() => R.__cb(cbIdx), ms); },
-    setInterval(cbIdx, ms) { return setInterval(() => R.__cb(cbIdx), ms); },
-    clearTimer(id) { clearTimeout(id); clearInterval(id); },
     // URL / History
     getLocationHref() { return R.__allocString(location.href); },
     getLocationSearch() { return R.__allocString(location.search); },
@@ -297,37 +294,6 @@ export const wasmImports = {
     consoleError(ptr, len) { console.error(R.__getString(ptr, len)); },
     // Misc
     randomFloat() { return Math.random(); },
-    now() { return performance.now(); },
-    requestAnimationFrame(cbIdx) { return requestAnimationFrame(() => R.__cb(cbIdx)); },
-  },
-
-  // ── Navigation (kept for backward compat with older codegen paths) ──────
-  nav: {
-    pushState(urlPtr, urlLen) { history.pushState(null, '', R.__getString(urlPtr, urlLen)); },
-    replaceState(urlPtr, urlLen) { history.replaceState(null, '', R.__getString(urlPtr, urlLen)); },
-    getHref() { return R.__allocString(location.href); },
-    getPathname() { return R.__allocString(location.pathname); },
-    getSearch() { return R.__allocString(location.search); },
-    getHash() { return R.__allocString(location.hash); },
-    onPopState(cbIdx) { window.addEventListener('popstate', () => R.__cb(cbIdx)); },
-    setHref(urlPtr, urlLen) { location.href = R.__getString(urlPtr, urlLen); },
-  },
-
-  // ── Console ──────────────────────────────────────────────────────────────
-  console: {
-    log(ptr, len) { console.log(R.__getString(ptr, len)); },
-    warn(ptr, len) { console.warn(R.__getString(ptr, len)); },
-    error(ptr, len) { console.error(R.__getString(ptr, len)); },
-    debug(ptr, len) { console.debug(R.__getString(ptr, len)); },
-  },
-
-  // ── Network — fetch ──────────────────────────────────────────────────────
-  net: {
-    fetch(urlPtr, urlLen, optsPtr, optsLen) {
-      const url = R.__getString(urlPtr, urlLen);
-      const opts = optsLen > 0 ? JSON.parse(R.__getString(optsPtr, optsLen)) : {};
-      return R.__registerObject(fetch(url, opts));
-    },
   },
 
   // ── HTTP — matches codegen "http" namespace ──────────────────────────────
@@ -376,24 +342,7 @@ export const wasmImports = {
   //  BROWSER APIs — things WASM physically cannot do
   // ════════════════════════════════════════════════════════════════════════════
 
-  // ── WebSocket (codegen namespace: "channel") ─────────────────────────────
-  channel: {
-    connect(urlPtr, urlLen, onMsgCb, onCloseCb) {
-      const ws = new WebSocket(R.__getString(urlPtr, urlLen));
-      const id = R.__registerObject(ws);
-      ws.addEventListener('message', (e) => {
-        const ptr = R.__allocString(typeof e.data === 'string' ? e.data : '');
-        R.__cbData(onMsgCb, ptr);
-      });
-      ws.addEventListener('close', () => R.__cb(onCloseCb));
-      return id;
-    },
-    send(wsId, dataPtr, dataLen) { R.__getObject(wsId).send(R.__getString(dataPtr, dataLen)); },
-    close(wsId) { R.__getObject(wsId).close(); },
-    setReconnect(wsId, intervalMs, maxRetries) { /* reconnection logic lives in WASM */ },
-  },
-
-  // Also provide "ws" namespace for alternate codegen paths
+  // ── WebSocket (codegen namespace: "ws") ─────────────────────────────────
   ws: {
     connect(urlPtr, urlLen) { return R.__registerObject(new WebSocket(R.__getString(urlPtr, urlLen))); },
     send(wsId, dataPtr, dataLen) { R.__getObject(wsId).send(R.__getString(dataPtr, dataLen)); },
@@ -519,7 +468,6 @@ export const wasmImports = {
     cachePrecache(namePtr, nameLen) {
       return caches.open(R.__getString(namePtr, nameLen));
     },
-    setStrategy(namePtr, nameLen) { /* strategy selection lives in WASM */ },
     registerPush(optsPtr, optsLen) {
       if (!('serviceWorker' in navigator) || !('PushManager' in window)) return 0;
       return navigator.serviceWorker.ready.then(reg =>
@@ -562,20 +510,14 @@ export const wasmImports = {
     },
   },
 
-  // ── Gesture — pointer events for swipe/longpress/pinch ───────────────────
+  // ── Gesture — longpress only (swipe/pinch math is WASM-internal) ───────
   gesture: {
-    registerSwipe(elId, dirPtr, dirLen) {
-      // Pointer events routed through dom.addEventListener; gesture recognition in WASM
-    },
     registerLongPress(elId, ms, cbIdx) {
       let timer;
       const el = R.__getElement(elId);
       el.addEventListener('pointerdown', () => { timer = setTimeout(() => R.__cb(cbIdx), ms); });
       el.addEventListener('pointerup', () => clearTimeout(timer));
       el.addEventListener('pointerleave', () => clearTimeout(timer));
-    },
-    registerPinch(elId, cbIdx) {
-      // Multi-touch tracking routed through dom.addEventListener; math in WASM
     },
   },
 
@@ -605,20 +547,18 @@ export const wasmImports = {
 
   // ── Auth — redirect + cookies (browser-only APIs) ────────────────────────
   auth: {
-    initAuth(providerPtr, providerLen, configPtr, configLen) { /* config stored in WASM */ },
     login(urlPtr, urlLen) { location.href = R.__getString(urlPtr, urlLen); },
-    logout(urlPtr, urlLen) {
-      document.cookie.split(';').forEach(c => {
-        document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
-      });
-      if (urlPtr) location.href = R.__getString(urlPtr, urlLen);
+    logout(urlPtr, urlLen) { if (urlPtr) location.href = R.__getString(urlPtr, urlLen); },
+    getCookie(namePtr, nameLen) {
+        const name = R.__getString(namePtr, nameLen);
+        const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+        return match ? R.__allocString(decodeURIComponent(match[1])) : 0;
     },
-    getUser() {
-      const match = document.cookie.match(/(?:^|; )nectar_user=([^;]*)/);
-      return match ? R.__allocString(decodeURIComponent(match[1])) : 0;
-    },
-    isAuthenticated() {
-      return document.cookie.includes('nectar_session=') ? 1 : 0;
+    setCookie(ptr, len) { document.cookie = R.__getString(ptr, len); },
+    clearCookies() {
+        document.cookie.split(';').forEach(c => {
+            document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+        });
     },
   },
 
@@ -695,11 +635,6 @@ export const wasmImports = {
       const locale = R.__getString(localePtr, localeLen) || undefined;
       return R.__allocString(new Intl.DateTimeFormat(locale).format(new Date(ms)));
     },
-    toZone(ms, zonePtr, zoneLen) {
-      // Returns ms adjusted — but really Intl handles display, WASM handles arithmetic
-      return ms; // timezone math is in WASM; this is a passthrough
-    },
-    addDuration(ms, durationMs) { return ms + durationMs; },
     getTimezoneOffset() { return new Date().getTimezoneOffset(); },
     formatDate(ms, localePtr, localeLen, optsPtr, optsLen) {
       const locale = localePtr ? R.__getString(localePtr, localeLen) : undefined;
@@ -747,7 +682,6 @@ export const wasmImports = {
       el.textContent = R.__getString(jsonPtr, jsonLen);
       document.head.appendChild(el);
     },
-    registerRoute(pathPtr, pathLen, titlePtr, titleLen) { /* route registry in WASM */ },
     emitStaticHtml(ptr, len) { return R.__allocString(document.documentElement.outerHTML); },
   },
 
@@ -785,34 +719,13 @@ export const wasmImports = {
     },
   },
 
-  // ── Responsive — matchMedia + window dimensions ─────────────────────────
-  responsive: {
-    registerBreakpoints(jsonPtr, jsonLen) { /* breakpoint logic in WASM, uses observe.matchMedia */ },
-    getBreakpoint() { return window.innerWidth; },
-  },
-
   // ── Theme — prefers-color-scheme + localStorage (browser APIs) ───────────
   theme: {
-    init(lightPtr, lightLen, darkPtr, darkLen) {
-      const stored = localStorage.getItem('nectar-theme');
-      if (stored) document.documentElement.setAttribute('data-theme', stored);
-    },
-    toggle() {
-      const curr = document.documentElement.getAttribute('data-theme');
-      const next = curr === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', next);
-      localStorage.setItem('nectar-theme', next);
-    },
-    set(namePtr, nameLen) {
-      const t = R.__getString(namePtr, nameLen);
-      document.documentElement.setAttribute('data-theme', t);
-      localStorage.setItem('nectar-theme', t);
-    },
-    getCurrent() {
-      const t = localStorage.getItem('nectar-theme') ||
-        (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
-      return R.__allocString(t);
-    },
+    getAttribute() { return R.__allocString(document.documentElement.getAttribute('data-theme') || ''); },
+    setAttribute(ptr, len) { document.documentElement.setAttribute('data-theme', R.__getString(ptr, len)); },
+    storageGet() { const v = localStorage.getItem('nectar-theme'); return v ? R.__allocString(v) : 0; },
+    storageSet(ptr, len) { localStorage.setItem('nectar-theme', R.__getString(ptr, len)); },
+    prefersDark() { return matchMedia('(prefers-color-scheme:dark)').matches ? 1 : 0; },
   },
 
   // ── A11y — ARIA attributes + focus management ───────────────────────────
@@ -842,9 +755,6 @@ export const wasmImports = {
       const focusable = container.querySelectorAll('button,a,[tabindex],input,textarea,select');
       if (focusable.length) focusable[0].focus();
     },
-    releaseFocusTrap() { /* WASM manages trap state */ },
-    enhance(elId, configPtr) { /* auto-enhancement logic in WASM */ },
-    checkContrast(fg, fgLen, bg, bgLen) { return 1; /* contrast math in WASM */ },
   },
 
   // ── Shortcuts — keyboard events (uses dom.addEventListener internally) ──
@@ -857,35 +767,24 @@ export const wasmImports = {
         if (mods === modifiers) { e.preventDefault(); R.__cb(cbIdx); }
       });
     },
-    unregister(keyPtr, keyLen) { /* handler cleanup in WASM */ },
   },
 
   // ── Virtual list — scroll measurements (read-only DOM, needs JS) ────────
   virtual: {
-    createList(containerElId, itemHeight, totalItems, renderCb, bufferSize) {
-      // WASM manages virtual list state. JS just provides scroll/size measurements.
-      return containerElId;
-    },
-    updateViewport(containerId, scrollTop, clientHeight) {
-      // WASM calls this with measurements it got from dom.getScrollTop/getClientHeight
-    },
     scrollTo(containerId, offset) {
       R.__getElement(containerId).scrollTop = offset;
     },
   },
 
-  // ── Animate — spring/keyframes need rAF + DOM style writes ──────────────
+  // ── Animate — keyframes need rAF + DOM style writes ──────────────────────
   // rAF is in timer namespace, style writes are flush opcodes.
-  // These are high-level entry points that codegen calls.
   animate: {
-    spring(elId, configPtr, configLen, cbIdx) { /* spring math in WASM, applies via SET_STYLE opcodes */ R.__cb(cbIdx); },
     keyframes(elId, framesPtr, framesLen, cbIdx) {
       const el = R.__getElement(elId);
       const frames = JSON.parse(R.__getString(framesPtr, framesLen));
       el.animate(frames.keyframes, frames.options);
       R.__cb(cbIdx);
     },
-    stagger(elsPtr, elsLen, configPtr, configLen) { /* stagger scheduling in WASM */ },
     cancel(elId) { R.__getElement(elId).getAnimations().forEach(a => a.cancel()); },
   },
 
@@ -930,37 +829,6 @@ export const wasmImports = {
       });
     },
     getData() { const e = R.__objects[0]; return e ? R.__allocString(e.dataTransfer.getData('text/plain')) : 0; },
-    setData(dataPtr, dataLen) { /* set during dragstart */ },
-  },
-
-  // ── Flags — feature flags (network fetch, browser API) ──────────────────
-  flags: {
-    isEnabled(namePtr, nameLen) { return 0; /* flag evaluation in WASM, fetch in net */ },
-  },
-
-  // ── Cache — query caching (uses memory, but init may need network) ──────
-  cache: {
-    init(configPtr, configLen, strategyPtr, strategyLen) { /* cache logic in WASM */ },
-    registerQuery(namePtr, nameLen, urlPtr, urlLen) { /* WASM manages cache entries */ },
-    registerMutation(namePtr, nameLen, urlPtr, urlLen) { /* WASM manages invalidation */ },
-    get(namePtr, nameLen, keyPtr, keyLen) { return 0; },
-    invalidate(namePtr, nameLen) { /* WASM clears cache */ },
-  },
-
-  // ── Permissions — runtime permission checks ─────────────────────────────
-  permissions: {
-    checkNetwork(urlPtr, urlLen, methodPtr, methodLen) { return 1; /* enforcement in WASM */ },
-    checkStorage(keyPtr, keyLen, opPtr, opLen) { return 1; },
-    registerPermissions(compPtr, compLen, permsPtr, permsLen) { /* WASM stores permissions */ },
-  },
-
-  // ── Form — validation (WASM logic, JS just reads DOM values) ────────────
-  form: {
-    registerForm(idPtr, idLen, schemaPtr, schemaLen) { /* validation in WASM */ },
-    validate(formId, dataPtr) { return 1; /* WASM validates */ },
-    setFieldError(formId, fieldPtr, fieldLen, msgPtr, msgLen) {
-      // Uses SET_ATTR / SET_TEXT opcodes — this is a convenience wrapper
-    },
   },
 
   // ── State — atomic state (WASM SharedArrayBuffer ops) ───────────────────
@@ -972,18 +840,6 @@ export const wasmImports = {
     },
   },
 
-  // ── Lifecycle — cleanup registration ────────────────────────────────────
-  lifecycle: {
-    registerCleanup(componentId, cbIdx) { /* WASM tracks cleanup callbacks */ },
-  },
-
-  // ── Contract — API boundary validation ──────────────────────────────────
-  contract: {
-    validate(schemaPtr, schemaLen, dataPtr, dataLen) { return 1; /* validation in WASM */ },
-    registerSchema(namePtr, nameLen, schemaPtr, schemaLen, hashPtr, hashLen) { /* WASM stores */ },
-    getHash(namePtr, nameLen) { return 0; },
-  },
-
   // ── Env — environment variable access ───────────────────────────────────
   env: {
     get(namePtr, nameLen) {
@@ -992,26 +848,6 @@ export const wasmImports = {
       const val = (typeof window !== 'undefined' && window.__env && window.__env[name]) || '';
       return R.__allocString(val);
     },
-  },
-
-  // ── String runtime (codegen imports) ────────────────────────────────────
-  string: {
-    concat(aPtr, aLen, bPtr, bLen) { return R.__allocString(R.__getString(aPtr, aLen) + R.__getString(bPtr, bLen)); },
-    fromI32(val) { return R.__allocString(String(val)); },
-    fromF64(val) { return R.__allocString(String(val)); },
-    fromBool(val) { return R.__allocString(val ? 'true' : 'false'); },
-    toString(val) { return R.__allocString(String(val)); },
-  },
-
-  // ── Signal runtime (codegen imports — reactive graph) ───────────────────
-  signal: {
-    create(initialVal) { return 0; /* reactive graph in WASM */ },
-    get(signalId) { return 0; },
-    set(signalId, val) {},
-    subscribe(signalId, cbIdx) {},
-    createEffect(cbIdx) {},
-    createMemo(cbIdx) { return 0; },
-    batch(cbIdx) {},
   },
 
   // ── Router runtime ──────────────────────────────────────────────────────
@@ -1059,14 +895,6 @@ export const wasmImports = {
       es.onmessage = (e) => R.__cbData(cbIdx, R.__allocString(e.data));
       return R.__registerObject(es);
     },
-    wsConnect(urlPtr, urlLen, cbIdx) {
-      const ws = new WebSocket(R.__getString(urlPtr, urlLen));
-      ws.onmessage = (e) => R.__cbData(cbIdx, R.__allocString(e.data));
-      return R.__registerObject(ws);
-    },
-    wsSend(wsId, dataPtr, dataLen) { R.__getObject(wsId).send(R.__getString(dataPtr, dataLen)); },
-    wsClose(wsId) { R.__getObject(wsId).close(); },
-    yield(streamId, dataPtr) { /* WASM manages stream state */ },
   },
 
   // ── Media — lazy loading, decode, preload (uses DOM + fetch) ────────────
@@ -1097,22 +925,10 @@ export const wasmImports = {
     },
   },
 
-  // ── AI — LLM interaction (fetch-based, uses streaming) ──────────────────
-  ai: {
-    chatStream(urlPt, urlLn, keyPt, keyLn, modelPt, modelLn, msgPt, msgLn, cbIdx) {
-      // Streaming chat — uses streaming.streamFetch internally
-    },
-    chatComplete(urlPt, urlLn, keyPt, keyLn, cbIdx) { /* single response fetch */ },
-    registerTool(namePt, nameLn, descPt, descLn, schemaPt, schemaLn, cbIdx) { /* tool registration in WASM */ },
-    embed(textPt, textLn, cbIdx) { /* embedding via fetch */ },
-    parseStructured(textPt, textLn, schemaPt, schemaLn) { return 0; /* parsing in WASM */ },
-  },
-
   // ── Test runtime ────────────────────────────────────────────────────────
   test: {
-    pass(namePtr, nameLen) { console.log(`✓ ${R.__getString(namePtr, nameLen)}`); },
-    fail(namePtr, nameLen, msgPtr, msgLen) { console.error(`✗ ${R.__getString(namePtr, nameLen)}: ${R.__getString(msgPtr, msgLen)}`); },
-    summary(passCount, failCount) { console.log(`Tests: ${passCount} passed, ${failCount} failed`); },
+    log(ptr, len) { console.log(R.__getString(ptr, len)); },
+    error(ptr, len) { console.error(R.__getString(ptr, len)); },
   },
 };
 

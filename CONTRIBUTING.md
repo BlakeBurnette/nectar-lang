@@ -24,7 +24,33 @@ Every feature, function, algorithm, data structure, and computation MUST be impl
 
 ---
 
-## Rule 2: JavaScript Exists Only for Browser API Syscalls
+## Rule 2: Prefer WASM-Internal Over JS Bridges
+
+Before creating a JS bridge function in core.js, ask: **can this live entirely in WASM?**
+
+WASM modules can call their own internal functions. If a feature is pure computation + state management, it should be WASM-internal functions — NOT imported from JS. Only cross the WASM→JS boundary when you physically need a browser API.
+
+**WASM-internal** (no JS needed):
+- Reactive signals (dependency graph, effect scheduling, batching)
+- Feature flags (compile-time constants in WASM data section)
+- Validation (schema checking, form validation)
+- Caching logic (LRU, TTL, invalidation)
+- Gesture math (velocity, direction, distance calculations)
+- Permissions enforcement
+- State management (atomic operations on shared memory)
+
+**JS bridge required** (browser API):
+- DOM manipulation (createElement, innerHTML, addEventListener)
+- Network (fetch, WebSocket, EventSource)
+- Storage (localStorage, IndexedDB, cookies)
+- Hardware (geolocation, camera, vibration)
+- Navigation (history.pushState, location.href)
+
+The test: if your function takes inputs and returns outputs without touching a browser API, it's WASM-internal. Period.
+
+---
+
+## Rule 3: JavaScript Exists Only for Browser API Syscalls
 
 JavaScript is permitted ONLY for browser APIs that WebAssembly physically cannot call. These are:
 
@@ -51,7 +77,7 @@ If it's not on this list, it doesn't get a JS implementation. Period.
 
 ---
 
-## Rule 3: DOM Manipulation Goes Through the Command Buffer
+## Rule 4: DOM Manipulation Goes Through the Command Buffer
 
 Nectar uses a mount/flush opcode architecture for DOM updates:
 
@@ -66,7 +92,7 @@ Adding a new opcode to `flush()` is almost always better than adding a new sysca
 
 ---
 
-## Rule 4: One JS File
+## Rule 5: One JS File
 
 All browser API syscalls live in `runtime/modules/core.js`. That is the ONLY runtime JS file.
 
@@ -79,7 +105,7 @@ These are infrastructure files, not runtime. They do not contain application log
 
 ---
 
-## Rule 5: No Node.js Tooling
+## Rule 6: No Node.js Tooling
 
 The `nectar` binary (Rust) handles ALL tooling:
 - Compiler (`nectar build`)
@@ -95,7 +121,7 @@ Do NOT create Node.js scripts, npm packages, or JavaScript CLI tools. Everything
 
 ---
 
-## Rule 6: No Logic in JavaScript
+## Rule 7: No Logic in JavaScript
 
 If you find yourself writing an `if` statement, a loop, a string transformation, or any conditional logic in a `.js` file, stop. That logic belongs in Rust/WASM.
 
@@ -116,7 +142,7 @@ The WASM module does all computation and passes the result. JavaScript just brid
 
 ---
 
-## Rule 7: Standard Library is Pure WASM
+## Rule 8: Standard Library is Pure WASM
 
 Every std lib namespace compiles to WASM instructions. No JS bridges, no thin wrappers, no "syscall helpers":
 
@@ -141,6 +167,9 @@ If a std lib feature needs to render UI, it builds HTML strings in WASM and uses
 When implementing a new feature, follow this:
 
 ```
+Can it be a WASM-internal function (no browser API needed)?
+  → Yes: Implement in Rust, compile to WASM-internal function. No JS bridge.
+
 Is it computation (math, string ops, data transformation, logic)?
   → Rust/WASM. No exceptions.
 
@@ -172,5 +201,7 @@ If you are an AI generating or modifying Nectar code:
 5. **ALWAYS check if an existing flush() opcode handles your need** before adding a new syscall.
 6. **ALWAYS implement std lib features as pure Rust** compiled to WASM.
 7. **ALWAYS prefer one WASM→JS boundary crossing over many.** Batch operations into the command buffer.
+8. **ALWAYS prefer WASM-internal functions over JS bridges.** If a feature doesn't need a browser API, it has zero JS. The signal runtime, feature flags, validation, caching — all WASM-internal.
+9. **Test your assumption**: If you think something needs JS, explain which specific browser API it calls. If you can't name one, it's WASM-internal.
 
 The guiding principle: **JavaScript is an impedance mismatch we minimize. Rust/WASM is the platform.**

@@ -57,6 +57,7 @@ impl WasmCodegen {
         // Import memory from host (for strings, DOM, etc.)
         self.line("(import \"env\" \"memory\" (memory 1))");
 
+        // TODO: String ops (concat, fromI32, etc.) should be WASM-internal too — separate task
         // Import string runtime — format string support
         self.line("(import \"string\" \"concat\" (func $string_concat (param i32 i32 i32 i32) (result i32 i32)))");
         self.line("(import \"string\" \"fromI32\" (func $string_fromI32 (param i32) (result i32 i32)))");
@@ -78,14 +79,9 @@ impl WasmCodegen {
         self.line("(import \"dom\" \"addEventListener\" (func $dom_addEventListener (param i32 i32 i32 i32)))");
         self.line("(import \"dom\" \"removeEventListener\" (func $dom_removeEventListener (param i32 i32 i32 i32)))");
 
-        // Import signal runtime
-        self.line("(import \"signal\" \"create\" (func $signal_create (param i32) (result i32)))");
-        self.line("(import \"signal\" \"get\" (func $signal_get (param i32) (result i32)))");
-        self.line("(import \"signal\" \"set\" (func $signal_set (param i32 i32)))");
-        self.line("(import \"signal\" \"subscribe\" (func $signal_subscribe (param i32 i32)))");
-        self.line("(import \"signal\" \"createEffect\" (func $signal_createEffect (param i32)))");
-        self.line("(import \"signal\" \"createMemo\" (func $signal_createMemo (param i32) (result i32)))");
-        self.line("(import \"signal\" \"batch\" (func $signal_batch (param i32)))");
+        // Signal runtime — pure WASM internal (no JS bridge needed)
+        // Signals are reactive primitives: create/get/set with automatic dependency tracking.
+        // The signal graph lives entirely in WASM linear memory.
 
         // Import HTTP/fetch runtime
         self.line("(import \"http\" \"fetch\" (func $http_fetch (param i32 i32 i32 i32) (result i32)))");
@@ -461,6 +457,10 @@ impl WasmCodegen {
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
         self.line("");
         self.emit_alloc_function();
+        self.emit_signal_runtime();
+        self.emit_gesture_runtime();
+        self.emit_flags_runtime();
+        self.emit_ai_runtime();
 
         // Collect test definitions for the test runner
         let mut test_defs: Vec<(&str, usize)> = Vec::new();
@@ -3095,6 +3095,363 @@ impl WasmCodegen {
         self.line(")");
     }
 
+    fn emit_signal_runtime(&mut self) {
+        self.line("");
+        self.line(";; ========== Signal runtime (WASM-internal) ==========");
+        self.line(";; Reactive signal graph lives entirely in WASM linear memory.");
+        self.line(";; Signal table starts at 65536 (64KB). Each entry = 72 bytes.");
+        self.line(";; Layout: [value:i32, sub_count:i32, subs[15]:i32*15, pad:4]");
+
+        // Globals
+        self.line("(global $__sig_count (mut i32) (i32.const 0))");
+        self.line("(global $__sig_base i32 (i32.const 65536))");
+        self.line("(global $__tracking (mut i32) (i32.const -1))");
+        self.line("(global $__batch_depth (mut i32) (i32.const 0))");
+        self.line("(global $__pending i32 (i32.const 131072))");
+        self.line("(global $__pending_count (mut i32) (i32.const 0))");
+
+        // Type for effect callbacks: (func) — no params, no results
+        self.line("(type $__effect_type (func))");
+
+        // $signal_create (param $initial i32) (result i32)
+        self.line("");
+        self.emit("(func $signal_create (param $initial i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $id i32)");
+        self.line("(local $addr i32)");
+        self.line("global.get $__sig_count");
+        self.line("local.set $id");
+        self.line("global.get $__sig_base");
+        self.line("local.get $id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("local.get $initial");
+        self.line("i32.store");          // addr+0 = value
+        self.line("local.get $addr");
+        self.line("i32.const 0");
+        self.line("i32.store offset=4"); // addr+4 = subscriber_count = 0
+        self.line("local.get $id");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("global.set $__sig_count");
+        self.line("local.get $id");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_get (param $id i32) (result i32)
+        self.line("");
+        self.emit("(func $signal_get (param $id i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("global.get $__sig_base");
+        self.line("local.get $id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        // Auto-track: if $__tracking != -1, subscribe
+        self.line("global.get $__tracking");
+        self.line("i32.const -1");
+        self.line("i32.ne");
+        self.line("if");
+        self.indent += 1;
+        self.line("local.get $id");
+        self.line("global.get $__tracking");
+        self.line("call $__sig_add_sub");
+        self.indent -= 1;
+        self.line("end");
+        self.line("local.get $addr");
+        self.line("i32.load");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_set (param $id i32) (param $val i32)
+        self.line("");
+        self.emit("(func $signal_set (param $id i32) (param $val i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("global.get $__sig_base");
+        self.line("local.get $id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("local.get $val");
+        self.line("i32.store");
+        self.line("local.get $id");
+        self.line("call $__sig_notify");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_subscribe (param $id i32) (param $cb i32)
+        self.line("");
+        self.emit("(func $signal_subscribe (param $id i32) (param $cb i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("(local $count i32)");
+        self.line("global.get $__sig_base");
+        self.line("local.get $id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("i32.load offset=4");
+        self.line("local.set $count");
+        // Store cb at addr + 8 + count*4
+        self.line("local.get $addr");
+        self.line("i32.const 8");
+        self.line("i32.add");
+        self.line("local.get $count");
+        self.line("i32.const 4");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.get $cb");
+        self.line("i32.store");
+        // Increment count
+        self.line("local.get $addr");
+        self.line("local.get $count");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("i32.store offset=4");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_createEffect (param $cb i32)
+        self.line("");
+        self.emit("(func $signal_createEffect (param $cb i32)");
+        self.indent += 1;
+        self.line("(local $old_tracking i32)");
+        self.line("global.get $__tracking");
+        self.line("local.set $old_tracking");
+        self.line("local.get $cb");
+        self.line("global.set $__tracking");
+        self.line("local.get $cb");
+        self.line("call_indirect (type $__effect_type)");
+        self.line("local.get $old_tracking");
+        self.line("global.set $__tracking");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_createMemo (param $compute_cb i32) (result i32)
+        self.line("");
+        self.emit("(func $signal_createMemo (param $compute_cb i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $sig_id i32)");
+        self.line("i32.const 0");
+        self.line("call $signal_create");
+        self.line("local.set $sig_id");
+        self.line("local.get $compute_cb");
+        self.line("call $signal_createEffect");
+        self.line("local.get $sig_id");
+        self.indent -= 1;
+        self.line(")");
+
+        // $signal_batch (param $cb i32)
+        self.line("");
+        self.emit("(func $signal_batch (param $cb i32)");
+        self.indent += 1;
+        self.line("global.get $__batch_depth");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("global.set $__batch_depth");
+        self.line("local.get $cb");
+        self.line("call_indirect (type $__effect_type)");
+        self.line("global.get $__batch_depth");
+        self.line("i32.const 1");
+        self.line("i32.sub");
+        self.line("global.set $__batch_depth");
+        // If batch_depth == 0, flush
+        self.line("global.get $__batch_depth");
+        self.line("i32.eqz");
+        self.line("if");
+        self.indent += 1;
+        self.line("call $__sig_flush_pending");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line(")");
+
+        // $__sig_add_sub (param $sig_id i32) (param $cb i32) — dedup subscriber
+        self.line("");
+        self.emit("(func $__sig_add_sub (param $sig_id i32) (param $cb i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("(local $count i32)");
+        self.line("(local $i i32)");
+        self.line("global.get $__sig_base");
+        self.line("local.get $sig_id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("i32.load offset=4");
+        self.line("local.set $count");
+        // Check for duplicate: loop through existing subscribers
+        self.line("i32.const 0");
+        self.line("local.set $i");
+        self.line("block $done");
+        self.indent += 1;
+        self.line("loop $check");
+        self.indent += 1;
+        self.line("local.get $i");
+        self.line("local.get $count");
+        self.line("i32.ge_u");
+        self.line("br_if $done");
+        // Load subscriber at addr + 8 + i*4
+        self.line("local.get $addr");
+        self.line("i32.const 8");
+        self.line("i32.add");
+        self.line("local.get $i");
+        self.line("i32.const 4");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("i32.load");
+        self.line("local.get $cb");
+        self.line("i32.eq");
+        self.line("br_if $done"); // Already subscribed, skip
+        self.line("local.get $i");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $i");
+        self.line("br $check");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        // If i == count, cb was not found — add it
+        self.line("local.get $i");
+        self.line("local.get $count");
+        self.line("i32.eq");
+        self.line("if");
+        self.indent += 1;
+        self.line("local.get $sig_id");
+        self.line("local.get $cb");
+        self.line("call $signal_subscribe");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line(")");
+
+        // $__sig_notify (param $sig_id i32)
+        self.line("");
+        self.emit("(func $__sig_notify (param $sig_id i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("(local $count i32)");
+        self.line("(local $i i32)");
+        self.line("(local $cb i32)");
+        self.line("global.get $__sig_base");
+        self.line("local.get $sig_id");
+        self.line("i32.const 72");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("i32.load offset=4");
+        self.line("local.set $count");
+        self.line("i32.const 0");
+        self.line("local.set $i");
+        self.line("block $done");
+        self.indent += 1;
+        self.line("loop $notify_loop");
+        self.indent += 1;
+        self.line("local.get $i");
+        self.line("local.get $count");
+        self.line("i32.ge_u");
+        self.line("br_if $done");
+        // Load subscriber cb
+        self.line("local.get $addr");
+        self.line("i32.const 8");
+        self.line("i32.add");
+        self.line("local.get $i");
+        self.line("i32.const 4");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("i32.load");
+        self.line("local.set $cb");
+        // If batching, queue; else call directly
+        self.line("global.get $__batch_depth");
+        self.line("i32.const 0");
+        self.line("i32.gt_s");
+        self.line("if");
+        self.indent += 1;
+        // Add to pending queue: store cb at pending_base + pending_count * 4
+        self.line("global.get $__pending");
+        self.line("global.get $__pending_count");
+        self.line("i32.const 4");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.get $cb");
+        self.line("i32.store");
+        self.line("global.get $__pending_count");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("global.set $__pending_count");
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        self.line("local.get $cb");
+        self.line("call_indirect (type $__effect_type)");
+        self.indent -= 1;
+        self.line("end");
+        self.line("local.get $i");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $i");
+        self.line("br $notify_loop");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line(")");
+
+        // $__sig_flush_pending
+        self.line("");
+        self.emit("(func $__sig_flush_pending");
+        self.indent += 1;
+        self.line("(local $i i32)");
+        self.line("(local $count i32)");
+        self.line("global.get $__pending_count");
+        self.line("local.set $count");
+        self.line("i32.const 0");
+        self.line("local.set $i");
+        self.line("block $done");
+        self.indent += 1;
+        self.line("loop $flush_loop");
+        self.indent += 1;
+        self.line("local.get $i");
+        self.line("local.get $count");
+        self.line("i32.ge_u");
+        self.line("br_if $done");
+        self.line("global.get $__pending");
+        self.line("local.get $i");
+        self.line("i32.const 4");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("i32.load");
+        self.line("call_indirect (type $__effect_type)");
+        self.line("local.get $i");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $i");
+        self.line("br $flush_loop");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("i32.const 0");
+        self.line("global.set $__pending_count");
+        self.indent -= 1;
+        self.line(")");
+    }
+
     fn collect_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
             match stmt {
@@ -3782,6 +4139,473 @@ impl WasmCodegen {
             let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
             self.line(&format!("(data (i32.const {}) \"{}\")", offset, escaped));
         }
+    }
+
+    fn emit_gesture_runtime(&mut self) {
+        self.line("");
+        self.line(";; ========== Gesture runtime (WASM-internal) ==========");
+        self.line(";; Swipe and pinch detection via pure WASM math.");
+        self.line(";; Long press remains in core.js (needs setTimeout).");
+
+        // Swipe globals
+        self.line("(global $__swipe_start_x (mut i32) (i32.const 0))");
+        self.line("(global $__swipe_start_y (mut i32) (i32.const 0))");
+        self.line("(global $__swipe_start_time (mut i32) (i32.const 0))");
+        self.line("(global $__swipe_cb (mut i32) (i32.const 0))");
+
+        // Pinch globals
+        self.line("(global $__pinch_initial_dist (mut i32) (i32.const 0))");
+        self.line("(global $__pinch_cb (mut i32) (i32.const 0))");
+
+        // $gesture_swipe_start (param $x i32) (param $y i32)
+        self.line("");
+        self.emit("(func $gesture_swipe_start (param $x i32) (param $y i32)");
+        self.indent += 1;
+        self.line("local.get $x");
+        self.line("global.set $__swipe_start_x");
+        self.line("local.get $y");
+        self.line("global.set $__swipe_start_y");
+        self.line("i32.const 0");
+        self.line("global.set $__swipe_start_time");
+        self.indent -= 1;
+        self.line(")");
+
+        // $gesture_swipe_end (param $x i32) (param $y i32) (result i32)
+        // Returns direction: 0=none, 1=left, 2=right, 3=up, 4=down
+        self.line("");
+        self.emit("(func $gesture_swipe_end (param $x i32) (param $y i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $dx i32)");
+        self.line("(local $dy i32)");
+        self.line("(local $abs_dx i32)");
+        self.line("(local $abs_dy i32)");
+        // dx = x - start_x
+        self.line("local.get $x");
+        self.line("global.get $__swipe_start_x");
+        self.line("i32.sub");
+        self.line("local.set $dx");
+        // dy = y - start_y
+        self.line("local.get $y");
+        self.line("global.get $__swipe_start_y");
+        self.line("i32.sub");
+        self.line("local.set $dy");
+        // abs_dx = (dx ^ (dx >> 31)) - (dx >> 31)
+        self.line("local.get $dx");
+        self.line("local.get $dx");
+        self.line("i32.const 31");
+        self.line("i32.shr_s");
+        self.line("i32.xor");
+        self.line("local.get $dx");
+        self.line("i32.const 31");
+        self.line("i32.shr_s");
+        self.line("i32.sub");
+        self.line("local.set $abs_dx");
+        // abs_dy = (dy ^ (dy >> 31)) - (dy >> 31)
+        self.line("local.get $dy");
+        self.line("local.get $dy");
+        self.line("i32.const 31");
+        self.line("i32.shr_s");
+        self.line("i32.xor");
+        self.line("local.get $dy");
+        self.line("i32.const 31");
+        self.line("i32.shr_s");
+        self.line("i32.sub");
+        self.line("local.set $abs_dy");
+        // Threshold check: if both < 30, return 0
+        self.line("local.get $abs_dx");
+        self.line("i32.const 30");
+        self.line("i32.le_s");
+        self.line("local.get $abs_dy");
+        self.line("i32.const 30");
+        self.line("i32.le_s");
+        self.line("i32.and");
+        self.line("if (result i32)");
+        self.indent += 1;
+        self.line("i32.const 0"); // none
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        // Horizontal vs vertical
+        self.line("local.get $abs_dx");
+        self.line("local.get $abs_dy");
+        self.line("i32.gt_s");
+        self.line("if (result i32)");
+        self.indent += 1;
+        // Horizontal: dx > 0 = right(2), dx < 0 = left(1)
+        self.line("local.get $dx");
+        self.line("i32.const 0");
+        self.line("i32.gt_s");
+        self.line("if (result i32)");
+        self.indent += 1;
+        self.line("i32.const 2"); // right
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        self.line("i32.const 1"); // left
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        // Vertical: dy > 0 = down(4), dy < 0 = up(3)
+        self.line("local.get $dy");
+        self.line("i32.const 0");
+        self.line("i32.gt_s");
+        self.line("if (result i32)");
+        self.indent += 1;
+        self.line("i32.const 4"); // down
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        self.line("i32.const 3"); // up
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line(")");
+
+        // $gesture_pinch_start (param $x1 i32) (param $y1 i32) (param $x2 i32) (param $y2 i32)
+        self.line("");
+        self.emit("(func $gesture_pinch_start (param $x1 i32) (param $y1 i32) (param $x2 i32) (param $y2 i32)");
+        self.indent += 1;
+        // dist = sqrt((x2-x1)^2 + (y2-y1)^2) as i32
+        self.line("local.get $x2");
+        self.line("local.get $x1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("local.get $x2");
+        self.line("local.get $x1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("f32.mul");
+        self.line("local.get $y2");
+        self.line("local.get $y1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("local.get $y2");
+        self.line("local.get $y1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("f32.mul");
+        self.line("f32.add");
+        self.line("f32.sqrt");
+        self.line("i32.trunc_f32_s");
+        self.line("global.set $__pinch_initial_dist");
+        self.indent -= 1;
+        self.line(")");
+
+        // $gesture_pinch_move — returns scale * 100 (fixed-point)
+        self.line("");
+        self.emit("(func $gesture_pinch_move (param $x1 i32) (param $y1 i32) (param $x2 i32) (param $y2 i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $cur_dist f32)");
+        // current distance
+        self.line("local.get $x2");
+        self.line("local.get $x1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("local.get $x2");
+        self.line("local.get $x1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("f32.mul");
+        self.line("local.get $y2");
+        self.line("local.get $y1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("local.get $y2");
+        self.line("local.get $y1");
+        self.line("i32.sub");
+        self.line("f32.convert_i32_s");
+        self.line("f32.mul");
+        self.line("f32.add");
+        self.line("f32.sqrt");
+        self.line("local.set $cur_dist");
+        // scale = (cur_dist / initial_dist) * 100
+        self.line("local.get $cur_dist");
+        self.line("global.get $__pinch_initial_dist");
+        self.line("f32.convert_i32_s");
+        self.line("f32.div");
+        self.line("f32.const 100");
+        self.line("f32.mul");
+        self.line("i32.trunc_f32_s");
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    fn emit_flags_runtime(&mut self) {
+        self.line("");
+        self.line(";; ========== Feature flags runtime (WASM-internal) ==========");
+        self.line(";; Compile-time feature flags in WASM linear memory.");
+        self.line(";; Flag table at 196608 (192KB). Each entry: 64 bytes (60 name + 4 enabled).");
+
+        // Globals
+        self.line("(global $__flag_count (mut i32) (i32.const 0))");
+        self.line("(global $__flag_base i32 (i32.const 196608))");
+
+        // $flags_register (param $name_ptr i32) (param $name_len i32) (param $enabled i32)
+        self.line("");
+        self.emit("(func $flags_register (param $name_ptr i32) (param $name_len i32) (param $enabled i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("(local $i i32)");
+        // addr = flag_base + flag_count * 64
+        self.line("global.get $__flag_base");
+        self.line("global.get $__flag_count");
+        self.line("i32.const 64");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        // Copy name bytes: loop i from 0 to name_len
+        self.line("i32.const 0");
+        self.line("local.set $i");
+        self.line("block $copy_done");
+        self.indent += 1;
+        self.line("loop $copy_loop");
+        self.indent += 1;
+        self.line("local.get $i");
+        self.line("local.get $name_len");
+        self.line("i32.ge_u");
+        self.line("br_if $copy_done");
+        // store byte: mem[addr + i] = mem[name_ptr + i]
+        self.line("local.get $addr");
+        self.line("local.get $i");
+        self.line("i32.add");
+        self.line("local.get $name_ptr");
+        self.line("local.get $i");
+        self.line("i32.add");
+        self.line("i32.load8_u");
+        self.line("i32.store8");
+        self.line("local.get $i");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $i");
+        self.line("br $copy_loop");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        // Store enabled at addr + 60
+        self.line("local.get $addr");
+        self.line("local.get $enabled");
+        self.line("i32.store offset=60");
+        // Increment flag count
+        self.line("global.get $__flag_count");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("global.set $__flag_count");
+        self.indent -= 1;
+        self.line(")");
+
+        // $flags_is_enabled (param $name_ptr i32) (param $name_len i32) (result i32)
+        self.line("");
+        self.emit("(func $flags_is_enabled (param $name_ptr i32) (param $name_len i32) (result i32)");
+        self.indent += 1;
+        self.line("(local $idx i32)");
+        self.line("(local $addr i32)");
+        self.line("(local $j i32)");
+        self.line("(local $match i32)");
+        self.line("i32.const 0");
+        self.line("local.set $idx");
+        self.line("block $not_found");
+        self.indent += 1;
+        self.line("loop $scan");
+        self.indent += 1;
+        self.line("local.get $idx");
+        self.line("global.get $__flag_count");
+        self.line("i32.ge_u");
+        self.line("br_if $not_found");
+        // addr = flag_base + idx * 64
+        self.line("global.get $__flag_base");
+        self.line("local.get $idx");
+        self.line("i32.const 64");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        // Compare name bytes
+        self.line("i32.const 1");
+        self.line("local.set $match");
+        self.line("i32.const 0");
+        self.line("local.set $j");
+        self.line("block $cmp_done");
+        self.indent += 1;
+        self.line("loop $cmp_loop");
+        self.indent += 1;
+        self.line("local.get $j");
+        self.line("local.get $name_len");
+        self.line("i32.ge_u");
+        self.line("br_if $cmp_done");
+        // if mem[addr+j] != mem[name_ptr+j], no match
+        self.line("local.get $addr");
+        self.line("local.get $j");
+        self.line("i32.add");
+        self.line("i32.load8_u");
+        self.line("local.get $name_ptr");
+        self.line("local.get $j");
+        self.line("i32.add");
+        self.line("i32.load8_u");
+        self.line("i32.ne");
+        self.line("if");
+        self.indent += 1;
+        self.line("i32.const 0");
+        self.line("local.set $match");
+        self.line("br $cmp_done");
+        self.indent -= 1;
+        self.line("end");
+        self.line("local.get $j");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $j");
+        self.line("br $cmp_loop");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        // If match, return enabled value
+        self.line("local.get $match");
+        self.line("if (result i32)");
+        self.indent += 1;
+        self.line("local.get $addr");
+        self.line("i32.load offset=60");
+        self.line("return");
+        self.indent -= 1;
+        self.line("else");
+        self.indent += 1;
+        // Continue scanning
+        self.line("local.get $idx");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("local.set $idx");
+        self.line("br $scan");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        // Not found — return 0
+        self.line("i32.const 0");
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    fn emit_ai_runtime(&mut self) {
+        self.line("");
+        self.line(";; ========== AI tool registration runtime (WASM-internal) ==========");
+        self.line(";; Tool table at 262144 (256KB). Each entry: 256 bytes.");
+        self.line(";; Layout: [name_ptr:i32, name_len:i32, desc_ptr:i32, desc_len:i32,");
+        self.line(";;          schema_ptr:i32, schema_len:i32, callback_idx:i32, pad:228]");
+
+        // Globals
+        self.line("(global $__tool_count (mut i32) (i32.const 0))");
+        self.line("(global $__tool_base i32 (i32.const 262144))");
+
+        // $ai_register_tool
+        self.line("");
+        self.emit("(func $ai_register_tool (param $name_ptr i32) (param $name_len i32) (param $desc_ptr i32) (param $desc_len i32) (param $schema_ptr i32) (param $schema_len i32) (param $cb i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        // addr = tool_base + tool_count * 256
+        self.line("global.get $__tool_base");
+        self.line("global.get $__tool_count");
+        self.line("i32.const 256");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        // Store fields
+        self.line("local.get $addr");
+        self.line("local.get $name_ptr");
+        self.line("i32.store");           // offset 0: name_ptr
+        self.line("local.get $addr");
+        self.line("local.get $name_len");
+        self.line("i32.store offset=4");  // offset 4: name_len
+        self.line("local.get $addr");
+        self.line("local.get $desc_ptr");
+        self.line("i32.store offset=8");  // offset 8: desc_ptr
+        self.line("local.get $addr");
+        self.line("local.get $desc_len");
+        self.line("i32.store offset=12"); // offset 12: desc_len
+        self.line("local.get $addr");
+        self.line("local.get $schema_ptr");
+        self.line("i32.store offset=16"); // offset 16: schema_ptr
+        self.line("local.get $addr");
+        self.line("local.get $schema_len");
+        self.line("i32.store offset=20"); // offset 20: schema_len
+        self.line("local.get $addr");
+        self.line("local.get $cb");
+        self.line("i32.store offset=24"); // offset 24: callback index
+        // Increment tool count
+        self.line("global.get $__tool_count");
+        self.line("i32.const 1");
+        self.line("i32.add");
+        self.line("global.set $__tool_count");
+        self.indent -= 1;
+        self.line(")");
+
+        // $ai_get_tool_count (result i32)
+        self.line("");
+        self.emit("(func $ai_get_tool_count (result i32)");
+        self.indent += 1;
+        self.line("global.get $__tool_count");
+        self.indent -= 1;
+        self.line(")");
+
+        // $ai_get_tool_name (param $idx i32) (result i32 i32)
+        self.line("");
+        self.emit("(func $ai_get_tool_name (param $idx i32) (result i32 i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("global.get $__tool_base");
+        self.line("local.get $idx");
+        self.line("i32.const 256");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("i32.load");            // name_ptr
+        self.line("local.get $addr");
+        self.line("i32.load offset=4");   // name_len
+        self.indent -= 1;
+        self.line(")");
+
+        // $ai_get_tool_schema (param $idx i32) (result i32 i32)
+        self.line("");
+        self.emit("(func $ai_get_tool_schema (param $idx i32) (result i32 i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("global.get $__tool_base");
+        self.line("local.get $idx");
+        self.line("i32.const 256");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        self.line("local.get $addr");
+        self.line("i32.load offset=16");  // schema_ptr
+        self.line("local.get $addr");
+        self.line("i32.load offset=20");  // schema_len
+        self.indent -= 1;
+        self.line(")");
+
+        // $ai_call_tool (param $idx i32)
+        self.line("");
+        self.emit("(func $ai_call_tool (param $idx i32)");
+        self.indent += 1;
+        self.line("(local $addr i32)");
+        self.line("global.get $__tool_base");
+        self.line("local.get $idx");
+        self.line("i32.const 256");
+        self.line("i32.mul");
+        self.line("i32.add");
+        self.line("local.set $addr");
+        // Load callback index and call via indirect
+        self.line("local.get $addr");
+        self.line("i32.load offset=24");
+        self.line("call_indirect (type $__effect_type)");
+        self.indent -= 1;
+        self.line(")");
     }
 
     fn next_label(&mut self) -> u32 {
