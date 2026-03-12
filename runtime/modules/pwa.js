@@ -18,24 +18,28 @@ const wasmImports = {
     },
 
     registerServiceWorker(path) {
+      if (!('serviceWorker' in navigator)) return Promise.resolve(null);
       return navigator.serviceWorker.register(path);
     },
 
     registerPush(registrationId, optionsJson) {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return Promise.resolve(null);
       return navigator.serviceWorker.ready.then(reg =>
         reg.pushManager.subscribe(JSON.parse(optionsJson))
       );
     },
 
     haptic(pattern) {
-      navigator.vibrate(pattern);
+      if (navigator.vibrate) navigator.vibrate(pattern);
     },
 
     biometricAuth(optionsJson) {
+      if (!navigator.credentials) return Promise.resolve(null);
       return navigator.credentials.get(JSON.parse(optionsJson));
     },
 
     cameraCapture(constraintsJson) {
+      if (!navigator.mediaDevices) return Promise.resolve(null);
       return navigator.mediaDevices.getUserMedia(JSON.parse(constraintsJson));
     },
 

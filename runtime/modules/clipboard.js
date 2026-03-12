@@ -12,6 +12,7 @@ const ClipboardRuntime = {
     catch { return ''; }
   },
   async copyImage(dataPtr, dataLen) {
+    if (typeof ClipboardItem === 'undefined') return 0;
     try {
       const data = readString(dataPtr, dataLen);
       const blob = await fetch(data).then(r => r.blob());
