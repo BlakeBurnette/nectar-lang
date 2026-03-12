@@ -86,11 +86,13 @@ impl WasmCodegen {
         self.line("(import \"dom\" \"setDragData\" (func $dom_setDragData (param i32 i32 i32 i32)))");
         self.line("(import \"dom\" \"getDragData\" (func $dom_getDragData (param i32 i32) (result i32)))");
         self.line("(import \"dom\" \"preventDefault\" (func $dom_preventDefault))");
-        self.line(";; Absorbed from embed/loader/media");
+        self.line(";; Absorbed from embed/loader/media/pdf/io");
         self.line("(import \"dom\" \"loadScript\" (func $dom_loadScript (param i32 i32 i32)))");
         self.line("(import \"dom\" \"loadChunk\" (func $dom_loadChunk (param i32 i32) (result i32)))");
         self.line("(import \"dom\" \"decodeImage\" (func $dom_decodeImage (param i32 i32 i32)))");
         self.line("(import \"dom\" \"progressiveImage\" (func $dom_progressiveImage (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"dom\" \"print\" (func $dom_print (param i32)))");
+        self.line("(import \"dom\" \"download\" (func $dom_download (param i32 i32 i32 i32)))");
 
         // ── Timer — browser timer APIs ───────────────────────────────────────
         self.line("");
@@ -103,7 +105,7 @@ impl WasmCodegen {
         self.line("(import \"timer\" \"cancelAnimationFrame\" (func $timer_cancelAnimationFrame (param i32)))");
         self.line("(import \"timer\" \"now\" (func $timer_now (result f64)))");
 
-        // ── Web API — storage, clipboard, history, console, random, router ──
+        // ── Web API — storage, clipboard, history, console, router, env, share, perf
         self.line("");
         self.line(";; Web API — storage");
         self.line("(import \"webapi\" \"localStorageGet\" (func $webapi_localStorageGet (param i32 i32) (result i32)))");
@@ -125,11 +127,17 @@ impl WasmCodegen {
         self.line("(import \"webapi\" \"consoleLog\" (func $webapi_consoleLog (param i32 i32)))");
         self.line("(import \"webapi\" \"consoleWarn\" (func $webapi_consoleWarn (param i32 i32)))");
         self.line("(import \"webapi\" \"consoleError\" (func $webapi_consoleError (param i32 i32)))");
-        self.line(";; Web API — misc");
-        self.line("(import \"webapi\" \"randomFloat\" (func $webapi_randomFloat (result f64)))");
         self.line(";; Web API — absorbed from router");
         self.line("(import \"webapi\" \"onPopState\" (func $webapi_onPopState (param i32)))");
-        self.line("(import \"webapi\" \"getSearchParam\" (func $webapi_getSearchParam (param i32 i32) (result i32)))");
+        self.line(";; Web API — absorbed from env");
+        self.line("(import \"webapi\" \"envGet\" (func $webapi_envGet (param i32 i32) (result i32)))");
+        self.line(";; Web API — absorbed from share");
+        self.line("(import \"webapi\" \"canShare\" (func $webapi_canShare (result i32)))");
+        self.line("(import \"webapi\" \"nativeShare\" (func $webapi_nativeShare (param i32 i32 i32 i32 i32 i32)))");
+        self.line(";; Web API — absorbed from perf");
+        self.line("(import \"webapi\" \"perfMark\" (func $webapi_perfMark (param i32 i32)))");
+        self.line("(import \"webapi\" \"perfMeasure\" (func $webapi_perfMeasure (param i32 i32 i32 i32 i32 i32)))");
+
 
         // ── HTTP — browser fetch API ─────────────────────────────────────────
         self.line("");
@@ -144,12 +152,6 @@ impl WasmCodegen {
         self.line("(import \"observe\" \"observe\" (func $observe_observe (param i32 i32)))");
         self.line("(import \"observe\" \"unobserve\" (func $observe_unobserve (param i32 i32)))");
         self.line("(import \"observe\" \"disconnect\" (func $observe_disconnect (param i32)))");
-
-        // ── Share — navigator.share ──────────────────────────────────────────
-        self.line("");
-        self.line(";; Share — browser navigator.share API");
-        self.line("(import \"share\" \"canShare\" (func $share_canShare (result i32)))");
-        self.line("(import \"share\" \"nativeShare\" (func $share_nativeShare (param i32 i32 i32 i32 i32 i32)))");
 
         // ── WebSocket ────────────────────────────────────────────────────────
         self.line("");
@@ -222,17 +224,6 @@ impl WasmCodegen {
         self.line("(import \"upload\" \"start\" (func $upload_start (param i32 i32) (result i32)))");
         self.line("(import \"upload\" \"cancel\" (func $upload_cancel (param i32)))");
 
-        // ── PDF — iframe + print ─────────────────────────────────────────────
-        self.line("");
-        self.line(";; PDF — browser iframe + print APIs");
-        self.line("(import \"pdf\" \"create\" (func $pdf_create (param i32 i32 i32 i32) (result i32)))");
-        self.line("(import \"pdf\" \"render\" (func $pdf_render (param i32 i32)))");
-
-        // ── IO — Blob download ───────────────────────────────────────────────
-        self.line("");
-        self.line(";; IO — browser Blob/URL APIs");
-        self.line("(import \"io\" \"download\" (func $io_download (param i32 i32 i32 i32)))");
-
         // ── Time — Intl + Date ───────────────────────────────────────────────
         self.line("");
         self.line(";; Time — browser Intl + Date APIs");
@@ -240,23 +231,6 @@ impl WasmCodegen {
         self.line("(import \"time\" \"format\" (func $time_format (param f64 i32 i32) (result i32)))");
         self.line("(import \"time\" \"getTimezoneOffset\" (func $time_getTimezoneOffset (result i32)))");
         self.line("(import \"time\" \"formatDate\" (func $time_formatDate (param f64 i32 i32 i32 i32) (result i32)))");
-
-        // ── Perf — performance.mark/measure ──────────────────────────────────
-        self.line("");
-        self.line(";; Perf — browser Performance API");
-        self.line("(import \"perf\" \"mark\" (func $perf_mark (param i32 i32)))");
-        self.line("(import \"perf\" \"measure\" (func $perf_measure (param i32 i32 i32 i32 i32 i32)))");
-
-        // ── Animate — Web Animations API ─────────────────────────────────────
-        self.line("");
-        self.line(";; Animate — browser Web Animations API");
-        self.line("(import \"animate\" \"keyframes\" (func $animate_keyframes (param i32 i32 i32 i32)))");
-        self.line("(import \"animate\" \"cancel\" (func $animate_cancel (param i32)))");
-
-        // ── Env — window.__env ───────────────────────────────────────────────
-        self.line("");
-        self.line(";; Env — browser window.__env access");
-        self.line("(import \"env\" \"get\" (func $env_get (param i32 i32) (result i32)))");
 
         // ── Streaming — ReadableStream + EventSource ─────────────────────────
         self.line("");

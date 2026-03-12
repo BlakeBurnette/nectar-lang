@@ -4,8 +4,9 @@
 //
 // WASM-internal (no JS bridge): signal, string, flags, cache, permissions, form, lifecycle,
 // contract, gesture, shortcuts, virtual scroll, style injection, animation, a11y, theme,
-// seo, trace, dnd, media lazy/preload, router matching, clipboard (via webapi), test (via webapi),
-// mem ops (WASM reads its own memory), atomic state (WASM atomic instructions)
+// seo, trace, dnd, media lazy/preload, router matching, mem ops, atomic state, animate
+// (rAF + SET_STYLE opcodes), pdf (createElement + srcdoc + dom.print), io (dom.download),
+// env (dom.envGet), share/perf (merged into webapi), random (WASM PRNG), URL parsing (WASM)
 //
 // DOM strategy:
 //   - Initial render: WASM builds HTML string in linear memory, single mount() sets innerHTML
@@ -285,6 +286,22 @@ export const wasmImports = {
       img.src = R.__getString(highPtr, highLen);
       img.onload = () => { el.src = img.src; };
     },
+
+    // Absorbed from pdf — contentWindow.print() is a browser API
+    print(elId) { R.__getElement(elId).contentWindow.print(); },
+
+    // Absorbed from io — Blob + URL.createObjectURL are browser APIs
+    download(dataPtr, dataLen, namePtr, nameLen) {
+      const data = R.__getString(dataPtr, dataLen);
+      const name = R.__getString(namePtr, nameLen);
+      const blob = new Blob([data], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
   },
 
   // ── Timers ───────────────────────────────────────────────────────────────
@@ -320,14 +337,29 @@ export const wasmImports = {
     consoleLog(ptr, len) { console.log(R.__getString(ptr, len)); },
     consoleWarn(ptr, len) { console.warn(R.__getString(ptr, len)); },
     consoleError(ptr, len) { console.error(R.__getString(ptr, len)); },
-    // Misc
-    randomFloat() { return Math.random(); },
     // Absorbed from router — popstate is a window event WASM can't listen to
     onPopState(cbIdx) { window.addEventListener('popstate', () => R.__cb(cbIdx)); },
-    // Absorbed from router — URL search param parsing
-    getSearchParam(namePtr, nameLen) {
-      const val = new URLSearchParams(location.search).get(R.__getString(namePtr, nameLen));
-      return val ? R.__allocString(val) : 0;
+    // Absorbed from env — window.__env property access
+    envGet(namePtr, nameLen) {
+      const name = R.__getString(namePtr, nameLen);
+      const val = (typeof window !== 'undefined' && window.__env && window.__env[name]) || '';
+      return R.__allocString(val);
+    },
+    // Absorbed from share — navigator.share
+    canShare() { return navigator.share ? 1 : 0; },
+    nativeShare(titlePtr, titleLen, textPtr, textLen, urlPtr, urlLen) {
+      if (!navigator.share) return 0;
+      navigator.share({
+        title: R.__getString(titlePtr, titleLen),
+        text: R.__getString(textPtr, textLen),
+        url: R.__getString(urlPtr, urlLen),
+      }).catch(() => {});
+      return 1;
+    },
+    // Absorbed from perf — performance.mark/measure
+    perfMark(namePtr, nameLen) { performance.mark(R.__getString(namePtr, nameLen)); },
+    perfMeasure(namePtr, nameLen, startPtr, startLen, endPtr, endLen) {
+      performance.measure(R.__getString(namePtr, nameLen), R.__getString(startPtr, startLen), R.__getString(endPtr, endLen));
     },
   },
 
@@ -356,20 +388,6 @@ export const wasmImports = {
     observe(obsId, elId) { R.__getObject(obsId).observe(R.__getElement(elId)); },
     unobserve(obsId, elId) { R.__getObject(obsId).unobserve(R.__getElement(elId)); },
     disconnect(obsId) { R.__getObject(obsId).disconnect(); },
-  },
-
-  // ── Share — navigator.share ────────────────────────────────────────────
-  share: {
-    canShare() { return navigator.share ? 1 : 0; },
-    nativeShare(titlePtr, titleLen, textPtr, textLen, urlPtr, urlLen) {
-      if (!navigator.share) return 0;
-      navigator.share({
-        title: R.__getString(titlePtr, titleLen),
-        text: R.__getString(textPtr, textLen),
-        url: R.__getString(urlPtr, urlLen),
-      }).catch(() => {});
-      return 1;
-    },
   },
 
   // ── WebSocket ──────────────────────────────────────────────────────────
@@ -580,45 +598,6 @@ export const wasmImports = {
     cancel(xhrId) { R.__getObject(xhrId).abort(); },
   },
 
-  // ── PDF — iframe + print ───────────────────────────────────────────────
-  pdf: {
-    create(htmlPtr, htmlLen, stylePtr, styleLen) {
-      const iframe = document.createElement('iframe');
-      iframe.style.cssText = 'position:absolute;left:-9999px;width:0;height:0;';
-      document.body.appendChild(iframe);
-      const doc = iframe.contentDocument || iframe.contentWindow.document;
-      doc.open();
-      doc.write(R.__getString(htmlPtr, htmlLen));
-      if (stylePtr) {
-        const style = doc.createElement('style');
-        style.textContent = R.__getString(stylePtr, styleLen);
-        doc.head.appendChild(style);
-      }
-      doc.close();
-      return R.__registerObject(iframe);
-    },
-    render(iframeId, cbIdx) {
-      const iframe = R.__getObject(iframeId);
-      iframe.contentWindow.print();
-      R.__cb(cbIdx);
-    },
-  },
-
-  // ── IO — Blob download ────────────────────────────────────────────────
-  io: {
-    download(dataPtr, dataLen, namePtr, nameLen) {
-      const data = R.__getString(dataPtr, dataLen);
-      const name = R.__getString(namePtr, nameLen);
-      const blob = new Blob([data], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      a.click();
-      URL.revokeObjectURL(url);
-    },
-  },
-
   // ── Time — Intl.DateTimeFormat, timezone ────────────────────────────────
   time: {
     now() { return Date.now(); },
@@ -631,34 +610,6 @@ export const wasmImports = {
       const locale = localePtr ? R.__getString(localePtr, localeLen) : undefined;
       const opts = optsLen > 0 ? JSON.parse(R.__getString(optsPtr, optsLen)) : {};
       return R.__allocString(new Intl.DateTimeFormat(locale, opts).format(new Date(ms)));
-    },
-  },
-
-  // ── Perf — performance.mark/measure ────────────────────────────────────
-  perf: {
-    mark(namePtr, nameLen) { performance.mark(R.__getString(namePtr, nameLen)); },
-    measure(namePtr, nameLen, startPtr, startLen, endPtr, endLen) {
-      performance.measure(R.__getString(namePtr, nameLen), R.__getString(startPtr, startLen), R.__getString(endPtr, endLen));
-    },
-  },
-
-  // ── Animate — Web Animations API ───────────────────────────────────────
-  animate: {
-    keyframes(elId, framesPtr, framesLen, cbIdx) {
-      const el = R.__getElement(elId);
-      const frames = JSON.parse(R.__getString(framesPtr, framesLen));
-      el.animate(frames.keyframes, frames.options);
-      R.__cb(cbIdx);
-    },
-    cancel(elId) { R.__getElement(elId).getAnimations().forEach(a => a.cancel()); },
-  },
-
-  // ── Env — window.__env access ──────────────────────────────────────────
-  env: {
-    get(namePtr, nameLen) {
-      const name = R.__getString(namePtr, nameLen);
-      const val = (typeof window !== 'undefined' && window.__env && window.__env[name]) || '';
-      return R.__allocString(val);
     },
   },
 
