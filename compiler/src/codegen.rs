@@ -430,6 +430,85 @@ impl WasmCodegen {
         self.line("(import \"theme\" \"set\" (func $theme_set (param i32 i32)))");
         self.line("(import \"theme\" \"getCurrent\" (func $theme_get_current (result i32)))");
 
+        // Standard library imports — utilities
+        self.line("");
+        self.line(";; Standard library — debounce/throttle");
+        self.line("(import \"std_util\" \"debounce\" (func $std_debounce (param i32 i32) (result i32)))");
+        self.line("(import \"std_util\" \"throttle\" (func $std_throttle (param i32 i32) (result i32)))");
+        self.line("(import \"std_util\" \"deep_clone\" (func $std_deep_clone (param i32) (result i32)))");
+        self.line("(import \"std_util\" \"deep_merge\" (func $std_deep_merge (param i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — BigDecimal");
+        self.line("(import \"std_decimal\" \"new\" (func $std_decimal_new (param i32 i32) (result i32)))");
+        self.line("(import \"std_decimal\" \"from_i64\" (func $std_decimal_from_i64 (param i64) (result i32)))");
+        self.line("(import \"std_decimal\" \"from_f64\" (func $std_decimal_from_f64 (param f64) (result i32)))");
+        self.line("(import \"std_decimal\" \"add\" (func $std_decimal_add (param i32 i32) (result i32)))");
+        self.line("(import \"std_decimal\" \"sub\" (func $std_decimal_sub (param i32 i32) (result i32)))");
+        self.line("(import \"std_decimal\" \"mul\" (func $std_decimal_mul (param i32 i32) (result i32)))");
+        self.line("(import \"std_decimal\" \"div\" (func $std_decimal_div (param i32 i32) (result i32)))");
+        self.line("(import \"std_decimal\" \"to_string\" (func $std_decimal_to_string (param i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — format");
+        self.line("(import \"std_format\" \"number\" (func $std_format_number (param f64 i32 i32) (result i32)))");
+        self.line("(import \"std_format\" \"currency\" (func $std_format_currency (param f64 i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"std_format\" \"percent\" (func $std_format_percent (param f64) (result i32)))");
+        self.line("(import \"std_format\" \"bytes\" (func $std_format_bytes (param i64) (result i32)))");
+        self.line("(import \"std_format\" \"compact\" (func $std_format_compact (param f64) (result i32)))");
+        self.line("(import \"std_format\" \"ordinal\" (func $std_format_ordinal (param i32) (result i32)))");
+        self.line("(import \"std_format\" \"relative_time\" (func $std_format_relative_time (param i64) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — URL");
+        self.line("(import \"std_url\" \"parse\" (func $std_url_parse (param i32 i32) (result i32)))");
+        self.line("(import \"std_url\" \"build\" (func $std_url_build (param i32 i32) (result i32)))");
+        self.line("(import \"std_url\" \"query_get\" (func $std_url_query_get (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"std_url\" \"query_set\" (func $std_url_query_set (param i32 i32 i32 i32 i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — collections");
+        self.line("(import \"std_collections\" \"group_by\" (func $std_collections_group_by (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_collections\" \"sort_by\" (func $std_collections_sort_by (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_collections\" \"uniq_by\" (func $std_collections_uniq_by (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_collections\" \"chunk\" (func $std_collections_chunk (param i32 i32) (result i32)))");
+        self.line("(import \"std_collections\" \"flatten\" (func $std_collections_flatten (param i32) (result i32)))");
+        self.line("(import \"std_collections\" \"zip\" (func $std_collections_zip (param i32 i32) (result i32)))");
+        self.line("(import \"std_collections\" \"partition\" (func $std_collections_partition (param i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — input masking");
+        self.line("(import \"std_mask\" \"phone\" (func $std_mask_phone (param i32 i32) (result i32)))");
+        self.line("(import \"std_mask\" \"currency\" (func $std_mask_currency (param i32 i32) (result i32)))");
+        self.line("(import \"std_mask\" \"credit_card\" (func $std_mask_credit_card (param i32 i32) (result i32)))");
+        self.line("(import \"std_mask\" \"pattern\" (func $std_mask_pattern (param i32 i32 i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — fuzzy search");
+        self.line("(import \"std_search\" \"create_index\" (func $std_search_create_index (param i32 i32) (result i32)))");
+        self.line("(import \"std_search\" \"query\" (func $std_search_query (param i32 i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — toast notifications");
+        self.line("(import \"std_toast\" \"success\" (func $std_toast_success (param i32 i32 i32)))");
+        self.line("(import \"std_toast\" \"error\" (func $std_toast_error (param i32 i32 i32)))");
+        self.line("(import \"std_toast\" \"warning\" (func $std_toast_warning (param i32 i32 i32)))");
+        self.line("(import \"std_toast\" \"info\" (func $std_toast_info (param i32 i32 i32)))");
+        self.line("(import \"std_toast\" \"dismiss_all\" (func $std_toast_dismiss_all))");
+
+        self.line("");
+        self.line(";; Standard library — skeleton loading");
+        self.line("(import \"std_skeleton\" \"text\" (func $std_skeleton_text (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_skeleton\" \"circle\" (func $std_skeleton_circle (param i32) (result i32)))");
+        self.line("(import \"std_skeleton\" \"rect\" (func $std_skeleton_rect (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"std_skeleton\" \"card\" (func $std_skeleton_card (result i32)))");
+
+        self.line("");
+        self.line(";; Standard library — pagination");
+        self.line("(import \"std_pagination\" \"paginate\" (func $std_pagination_paginate (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_pagination\" \"page_numbers\" (func $std_pagination_page_numbers (param i32 i32 i32) (result i32)))");
+        self.line("(import \"std_pagination\" \"infinite_scroll\" (func $std_pagination_infinite_scroll (param i32 i32) (result i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");

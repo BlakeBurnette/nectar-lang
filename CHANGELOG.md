@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Animations: `spring` (physics-based), `keyframes` (CSS @keyframes), `stagger` (sequential list animation) — all respect `prefers-reduced-motion`
 - Keyboard shortcuts: `shortcut` keyword with cross-platform key mapping (Cmd → Ctrl), component-scoped, accessible
 - Virtualized lists: `virtual` keyword renders only visible items + buffer, 100K items with ~30 DOM nodes
+- **Standard Library** (curated, security-reviewed, auto-included — no imports needed):
+  - `debounce()` and `throttle()` — event handler operators, no lodash
+  - `BigDecimal` type — arbitrary-precision arithmetic, no floating-point errors
+  - `format` namespace — `number`, `currency`, `percent`, `bytes`, `compact`, `ordinal`, `relative_time` with locale support
+  - `collections` namespace — `group_by`, `sort_by`, `uniq_by`, `chunk`, `flatten`, `zip`, `partition`
+  - `url` namespace — `parse`, `build`, `query_get`, `query_set` for URL manipulation
+  - `mask` namespace — `phone`, `credit_card`, `currency`, `pattern` for input formatting
+  - `search` namespace — `create_index` and `query` for client-side fuzzy search
+  - `toast` — `success`, `error`, `warning`, `info` notification system
+  - `skeleton` — `text`, `circle`, `rect`, `card` loading placeholders with shimmer
+  - `pagination` — `paginate`, `page_numbers`, `infinite_scroll` helpers
 
 ### Build targets
 - `--target pwa` — Progressive Web App

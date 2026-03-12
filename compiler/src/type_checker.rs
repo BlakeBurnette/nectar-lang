@@ -708,6 +708,173 @@ impl TypeChecker {
             });
         }
 
+        // Register debounce and throttle utility functions
+        {
+            self.fn_sigs.insert("debounce".to_string(), Ty::Function {
+                params: vec![Ty::Function { params: vec![], ret: Box::new(Ty::Unit) }, Ty::I32],
+                ret: Box::new(Ty::Function { params: vec![], ret: Box::new(Ty::Unit) }),
+            });
+            self.fn_sigs.insert("throttle".to_string(), Ty::Function {
+                params: vec![Ty::Function { params: vec![], ret: Box::new(Ty::Unit) }, Ty::I32],
+                ret: Box::new(Ty::Function { params: vec![], ret: Box::new(Ty::Unit) }),
+            });
+        }
+
+        // Register BigDecimal type and methods
+        {
+            // BigDecimal — arbitrary precision decimal
+            let mut bd_fields = HashMap::new();
+            bd_fields.insert("value".to_string(), Ty::String_);
+            bd_fields.insert("precision".to_string(), Ty::I32);
+            self.structs.insert("BigDecimal".to_string(), StructInfo { fields: bd_fields });
+
+            // BigDecimal constructor and methods
+            self.fn_sigs.insert("BigDecimal::new".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Struct("BigDecimal".to_string())),
+            });
+            self.fn_sigs.insert("BigDecimal::from_i64".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::Struct("BigDecimal".to_string())),
+            });
+            self.fn_sigs.insert("BigDecimal::from_f64".to_string(), Ty::Function {
+                params: vec![Ty::F64],
+                ret: Box::new(Ty::Struct("BigDecimal".to_string())),
+            });
+        }
+
+        // Register format namespace functions
+        {
+            self.fn_sigs.insert("format::number".to_string(), Ty::Function {
+                params: vec![Ty::F64, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::currency".to_string(), Ty::Function {
+                params: vec![Ty::F64, Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::percent".to_string(), Ty::Function {
+                params: vec![Ty::F64],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::bytes".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::compact".to_string(), Ty::Function {
+                params: vec![Ty::F64],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::ordinal".to_string(), Ty::Function {
+                params: vec![Ty::I32],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("format::relative_time".to_string(), Ty::Function {
+                params: vec![Ty::Struct("Instant".to_string())],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
+        // Register url namespace functions and Url type
+        {
+            // Url type
+            let mut url_fields = HashMap::new();
+            url_fields.insert("href".to_string(), Ty::String_);
+            url_fields.insert("origin".to_string(), Ty::String_);
+            url_fields.insert("protocol".to_string(), Ty::String_);
+            url_fields.insert("host".to_string(), Ty::String_);
+            url_fields.insert("pathname".to_string(), Ty::String_);
+            url_fields.insert("search".to_string(), Ty::String_);
+            url_fields.insert("hash".to_string(), Ty::String_);
+            self.structs.insert("Url".to_string(), StructInfo { fields: url_fields });
+
+            self.fn_sigs.insert("url::parse".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Struct("Url".to_string())),
+            });
+            self.fn_sigs.insert("url::build".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Struct("Url".to_string())),
+            });
+            self.fn_sigs.insert("url::query_get".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::Option_(Box::new(Ty::String_))),
+            });
+            self.fn_sigs.insert("url::query_set".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
+        // Register collections namespace functions
+        {
+            // Collections utility functions (generic over arrays)
+            self.fn_sigs.insert("collections::group_by".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::String_],
+                ret: Box::new(Ty::Error), // Returns Map<String, Array<T>>
+            });
+            self.fn_sigs.insert("collections::sort_by".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::String_],
+                ret: Box::new(Ty::Array(Box::new(Ty::Error))),
+            });
+            self.fn_sigs.insert("collections::uniq_by".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::String_],
+                ret: Box::new(Ty::Array(Box::new(Ty::Error))),
+            });
+            self.fn_sigs.insert("collections::chunk".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::I32],
+                ret: Box::new(Ty::Array(Box::new(Ty::Array(Box::new(Ty::Error))))),
+            });
+            self.fn_sigs.insert("collections::flatten".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Array(Box::new(Ty::Error))))],
+                ret: Box::new(Ty::Array(Box::new(Ty::Error))),
+            });
+            self.fn_sigs.insert("collections::zip".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::Array(Box::new(Ty::Error))],
+                ret: Box::new(Ty::Array(Box::new(Ty::Tuple(vec![Ty::Error, Ty::Error])))),
+            });
+            self.fn_sigs.insert("collections::partition".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::Function { params: vec![Ty::Error], ret: Box::new(Ty::Bool) }],
+                ret: Box::new(Ty::Tuple(vec![Ty::Array(Box::new(Ty::Error)), Ty::Array(Box::new(Ty::Error))])),
+            });
+        }
+
+        // Register mask namespace functions
+        {
+            self.fn_sigs.insert("mask::phone".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("mask::currency".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("mask::pattern".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("mask::credit_card".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
+        // Register search namespace functions and SearchIndex type
+        {
+            self.fn_sigs.insert("search::create_index".to_string(), Ty::Function {
+                params: vec![Ty::Array(Box::new(Ty::Error)), Ty::Array(Box::new(Ty::String_))],
+                ret: Box::new(Ty::Struct("SearchIndex".to_string())),
+            });
+            self.fn_sigs.insert("search::query".to_string(), Ty::Function {
+                params: vec![Ty::Struct("SearchIndex".to_string()), Ty::String_],
+                ret: Box::new(Ty::Array(Box::new(Ty::Error))),
+            });
+
+            let mut search_idx_fields = HashMap::new();
+            search_idx_fields.insert("size".to_string(), Ty::I32);
+            self.structs.insert("SearchIndex".to_string(), StructInfo { fields: search_idx_fields });
+        }
+
         for item in &program.items {
             match item {
                 Item::Struct(s) => {

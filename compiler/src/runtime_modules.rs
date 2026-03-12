@@ -172,6 +172,65 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
             check_expr(template, modules);
         }
         Expr::Fetch { .. } => { /* core handles fetch */ }
+        // Detect std lib function calls by name
+        Expr::FnCall { callee, args, .. } => {
+            if let Expr::Ident(ref name) = **callee {
+                match name.as_str() {
+                    "debounce" | "throttle" | "deep_clone" | "deep_merge" => {
+                        modules.insert("std_util".to_string());
+                    }
+                    "toast" => {
+                        modules.insert("std_toast".to_string());
+                    }
+                    "paginate" | "page_numbers" | "infinite_scroll" => {
+                        modules.insert("std_pagination".to_string());
+                    }
+                    _ => {}
+                }
+            }
+            // Check for namespace calls like format::number, collections::group_by
+            if let Expr::FieldAccess { object, field, .. } = &**callee {
+                if let Expr::Ident(ref ns) = **object {
+                    match ns.as_str() {
+                        "format" => { modules.insert("std_format".to_string()); }
+                        "collections" => { modules.insert("std_collections".to_string()); }
+                        "url" => { modules.insert("std_url".to_string()); }
+                        "mask" => { modules.insert("std_mask".to_string()); }
+                        "search" => { modules.insert("std_search".to_string()); }
+                        "toast" => { modules.insert("std_toast".to_string()); }
+                        "skeleton" => { modules.insert("std_skeleton".to_string()); }
+                        "pagination" => { modules.insert("std_pagination".to_string()); }
+                        _ => {}
+                    }
+                }
+            }
+            check_expr(callee, modules);
+            for arg in args {
+                check_expr(arg, modules);
+            }
+        }
+        // Detect BigDecimal usage
+        Expr::MethodCall { object, args, .. } => {
+            if let Expr::Ident(ref name) = **object {
+                match name.as_str() {
+                    "clipboard" => { modules.insert("clipboard".to_string()); }
+                    "crypto" => { modules.insert("crypto".to_string()); }
+                    "BigDecimal" => { modules.insert("std_decimal".to_string()); }
+                    "toast" => { modules.insert("std_toast".to_string()); }
+                    "skeleton" => { modules.insert("std_skeleton".to_string()); }
+                    "format" => { modules.insert("std_format".to_string()); }
+                    "collections" => { modules.insert("std_collections".to_string()); }
+                    "url" => { modules.insert("std_url".to_string()); }
+                    "mask" => { modules.insert("std_mask".to_string()); }
+                    "search" => { modules.insert("std_search".to_string()); }
+                    _ => {}
+                }
+            }
+            check_expr(object, modules);
+            for arg in args {
+                check_expr(arg, modules);
+            }
+        }
         // Recurse into sub-expressions
         Expr::Binary { left, right, .. } => {
             check_expr(left, modules);
@@ -182,26 +241,6 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
         }
         Expr::FieldAccess { object, .. } => {
             check_expr(object, modules);
-        }
-        Expr::MethodCall { object, args, .. } => {
-            if let Expr::Ident(ref name) = **object {
-                if name == "clipboard" {
-                    modules.insert("clipboard".to_string());
-                }
-                if name == "crypto" {
-                    modules.insert("crypto".to_string());
-                }
-            }
-            check_expr(object, modules);
-            for arg in args {
-                check_expr(arg, modules);
-            }
-        }
-        Expr::FnCall { callee, args, .. } => {
-            check_expr(callee, modules);
-            for arg in args {
-                check_expr(arg, modules);
-            }
         }
         Expr::Index { object, index, .. } => {
             check_expr(object, modules);

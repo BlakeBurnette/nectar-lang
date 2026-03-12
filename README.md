@@ -54,6 +54,16 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | Animations | Framer Motion / GSAP | N/A | `spring`, `keyframes`, `stagger` — physics-based, GPU-accelerated |
 | Keyboard shortcuts | Mousetrap / hotkeys | N/A | `shortcut` keyword — cross-platform, scoped, accessible |
 | Virtualized lists | react-window / tanstack-virtual | N/A | `virtual` keyword — 100K items, ~30 DOM nodes |
+| Debounce/throttle | lodash (69K+ dependents) | N/A | Built-in `debounce()` and `throttle()` — zero deps |
+| Precision math | decimal.js / big.js | N/A | `BigDecimal` type — arbitrary precision, no floating-point errors |
+| Number formatting | Numeral.js / Intl wrappers | N/A | `format::currency`, `format::compact`, `format::bytes` |
+| Input masking | inputmask / cleave.js | N/A | `mask::phone`, `mask::credit_card`, `mask::pattern` |
+| Fuzzy search | Fuse.js / FlexSearch | N/A | `search::create_index` + `search::query` — client-side |
+| Toast notifications | react-toastify / sonner (7M+/wk) | N/A | `toast.success/error/warning/info` — built-in |
+| Skeleton loading | react-loading-skeleton | N/A | `skeleton.text/circle/rect/card` — shimmer placeholders |
+| Pagination | Various (manual) | Pagy / Kaminari | `pagination.paginate` + `page_numbers` + infinite scroll |
+| URL manipulation | query-string / qs | N/A | `url::parse`, `url::query_set`, `url::query_get` |
+| Collections | lodash (groupBy, sortBy, etc.) | N/A | `collections::group_by`, `sort_by`, `chunk`, `zip` |
 
 Nectar was designed from the ground up with these principles:
 
@@ -1435,6 +1445,83 @@ Render 100K+ items with ~30 DOM nodes. The `virtual` keyword handles windowing, 
 
 No react-window. No tanstack-virtual. Just one keyword. See [`examples/virtual-list.nectar`](examples/virtual-list.nectar).
 
+---
+
+### Standard Library
+
+Nectar ships a curated, security-reviewed standard library. No imports needed — if you use a function, the compiler auto-includes the module. If you don't, it's not in your output.
+
+**Debounce & Throttle** — no lodash:
+```nectar
+let search = debounce(self.do_search, 300);   // wait 300ms after last call
+let scroll = throttle(self.load_more, 100);   // at most once per 100ms
+```
+
+**BigDecimal** — arbitrary precision, no floating-point surprises:
+```nectar
+let price = BigDecimal::new("19.99");
+let tax = price.mul(BigDecimal::new("0.0825"));  // exact: 1.649175
+```
+
+**Formatting** — locale-aware number, currency, time display:
+```nectar
+format::currency(19.99, "USD", "en-US")  // "$19.99"
+format::compact(1234567.0)               // "1.2M"
+format::bytes(1048576)                   // "1.0 MB"
+format::ordinal(42)                      // "42nd"
+format::relative_time(timestamp)         // "3 hours ago"
+```
+
+**Collections** — groupBy, sortBy, uniqBy, chunk, flatten, zip, partition:
+```nectar
+let by_role = collections::group_by(users, "role");
+let sorted = collections::sort_by(users, "name");
+let pages = collections::chunk(users, 25);
+```
+
+**URL Builder** — parse, build, manipulate query strings:
+```nectar
+let parsed = url::parse("https://api.example.com/users?page=1");
+let updated = url::query_set(parsed.href, "role", "admin");
+```
+
+**Input Masking** — format user input as they type:
+```nectar
+mask::phone("5551234567")         // "(555) 123-4567"
+mask::credit_card("4242424242")   // "4242 4242 42"
+mask::pattern(value, "##/##/####") // date mask
+```
+
+**Fuzzy Search** — client-side search engine, no Fuse.js:
+```nectar
+let index = search::create_index(users, vec!["name", "email"]);
+let results = search::query(index, "blake");
+```
+
+**Toast Notifications** — no react-toastify, no sonner:
+```nectar
+toast.success("Saved successfully");
+toast.error("Something went wrong");
+toast.warning("Unsaved changes");
+```
+
+**Skeleton Loading** — shimmer placeholders:
+```nectar
+skeleton.circle(64)       // avatar placeholder
+skeleton.text(3)          // 3 lines of text shimmer
+skeleton.rect("100%", "200px")  // image placeholder
+```
+
+**Pagination** — page numbers, infinite scroll:
+```nectar
+let page = pagination.paginate(users, current_page, 25);
+let numbers = pagination.page_numbers(current_page, page.total_pages);
+```
+
+All curated. All security-reviewed. No public package registry — Apple model. See [`examples/std-lib.nectar`](examples/std-lib.nectar).
+
+---
+
 ### Form Binding
 
 Two-way data binding with the `bind:` directive keeps signals and form inputs in sync automatically.
@@ -1823,6 +1910,7 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`animations.nectar`](examples/animations.nectar) | Animations — `spring`, `keyframes`, `stagger`, physics-based |
 | [`shortcuts.nectar`](examples/shortcuts.nectar) | Keyboard shortcuts — `shortcut` keyword, cross-platform |
 | [`virtual-list.nectar`](examples/virtual-list.nectar) | Virtualized lists — `virtual` keyword, 100K items, ~30 DOM nodes |
+| [`std-lib.nectar`](examples/std-lib.nectar) | Standard library — debounce, BigDecimal, format, collections, toast, search, masking, pagination |
 
 Compile any example:
 
