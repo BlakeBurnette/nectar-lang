@@ -90,6 +90,8 @@ impl Parser {
                         | TokenKind::Lazy
                         | TokenKind::Test
                         | TokenKind::Trait
+                        | TokenKind::Contract
+                        | TokenKind::App
                         | TokenKind::Pub => break,
                         _ => { self.advance(); }
                     }
@@ -164,13 +166,15 @@ impl Parser {
             TokenKind::Store => Ok(Item::Store(self.parse_store(is_pub)?)),
             TokenKind::Agent => Ok(Item::Agent(self.parse_agent()?)),
             TokenKind::Router => Ok(Item::Router(self.parse_router()?)),
+            TokenKind::Contract => Ok(Item::Contract(self.parse_contract(is_pub)?)),
+            TokenKind::App => Ok(Item::App(self.parse_app(is_pub)?)),
             TokenKind::Lazy => {
                 // lazy component Name { ... }
                 self.advance();
                 Ok(Item::LazyComponent(self.parse_lazy_component()?))
             }
             TokenKind::Test => Ok(Item::Test(self.parse_test_def()?)),
-            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, lazy, test)")),
+            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, lazy, test)")),
         }
     }
 
@@ -290,7 +294,9 @@ impl Parser {
         let mut methods = Vec::new();
         let mut styles = Vec::new();
         let mut transitions = Vec::new();
+        let mut gestures = Vec::new();
         let mut render = None;
+        let mut permissions = None;
         let mut skeleton = None;
         let mut error_boundary = None;
 
@@ -314,13 +320,19 @@ impl Parser {
                 TokenKind::Render => {
                     render = Some(self.parse_render_block()?);
                 }
+                TokenKind::Permissions => {
+                    permissions = Some(self.parse_permissions()?);
+                }
+                TokenKind::Gesture => {
+                    gestures.push(self.parse_gesture()?);
+                }
                 TokenKind::Ident(ref id) if id == "skeleton" => {
                     skeleton = Some(self.parse_skeleton_block()?);
                 }
                 TokenKind::Ident(ref id) if id == "error_boundary" => {
                     error_boundary = Some(self.parse_error_boundary()?);
                 }
-                _ => return Err(self.error("Expected let, signal, fn, style, transition, render, skeleton, or error_boundary in component")),
+                _ => return Err(self.error("Expected let, signal, fn, style, transition, render, permissions, gesture, skeleton, or error_boundary in component")),
             }
         }
 
@@ -331,7 +343,57 @@ impl Parser {
             span,
         })?;
 
-        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, skeleton, error_boundary, span })
+        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, span })
+    }
+
+    /// Parse `permissions { network: [...], storage: [...], capabilities: [...] }`
+    fn parse_permissions(&mut self) -> Result<PermissionsDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Permissions)?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut network = Vec::new();
+        let mut storage = Vec::new();
+        let mut capabilities = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let values = self.parse_string_array()?;
+            // optional trailing comma
+            self.match_token(&TokenKind::Comma);
+
+            match key.as_str() {
+                "network" => network = values,
+                "storage" => storage = values,
+                "capabilities" => capabilities = values,
+                _ => return Err(self.error(&format!(
+                    "Unknown permissions key '{}'; expected network, storage, or capabilities", key
+                ))),
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(PermissionsDef { network, storage, capabilities, span })
+    }
+
+    /// Parse `["str1", "str2", ...]`
+    fn parse_string_array(&mut self) -> Result<Vec<String>, ParseError> {
+        self.expect(&TokenKind::LeftBracket)?;
+        let mut items = Vec::new();
+        while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+            if let TokenKind::StringLit(s) = self.peek_kind() {
+                self.advance();
+                items.push(s);
+            } else {
+                return Err(self.error("Expected string literal in array"));
+            }
+            if !self.check(&TokenKind::RightBracket) {
+                self.expect(&TokenKind::Comma)?;
+            }
+        }
+        self.expect(&TokenKind::RightBracket)?;
+        Ok(items)
     }
 
     /// Parse `skeleton { <template_node> }` — placeholder UI shown while loading
@@ -401,6 +463,7 @@ impl Parser {
     fn parse_state_field(&mut self) -> Result<StateField, ParseError> {
         self.expect(&TokenKind::Let)?;
         let mutable = self.match_token(&TokenKind::Mut);
+        let secret = self.match_token(&TokenKind::Secret);
         let name = self.expect_ident()?;
 
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -424,11 +487,12 @@ impl Parser {
         let initializer = self.parse_expr()?;
         self.expect(&TokenKind::Semicolon)?;
 
-        Ok(StateField { name, ty, mutable, initializer, ownership })
+        Ok(StateField { name, ty, mutable, secret, initializer, ownership })
     }
 
     fn parse_signal_field(&mut self) -> Result<StateField, ParseError> {
         self.expect(&TokenKind::Signal)?;
+        let secret = self.match_token(&TokenKind::Secret);
         let name = self.expect_ident()?;
 
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -445,6 +509,7 @@ impl Parser {
             name,
             ty,
             mutable: true,
+            secret,
             initializer,
             ownership: Ownership::Owned,
         })
@@ -1003,6 +1068,224 @@ impl Parser {
         }
     }
 
+    /// Parse a contract definition:
+    /// ```nectar
+    /// contract CustomerResponse {
+    ///     id: u32,
+    ///     name: String,
+    ///     email: String,
+    ///     balance_cents: i64,
+    ///     tier: enum { free, pro, enterprise },
+    ///     deleted_at: DateTime?,
+    /// }
+    /// ```
+    fn parse_contract(&mut self, is_pub: bool) -> Result<ContractDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Contract)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut fields = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let field_span = self.current_span();
+            let field_name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+
+            // Parse the type — could be a regular type or inline enum
+            let ty = if self.check(&TokenKind::Enum) {
+                // inline enum: `tier: enum { free, pro, enterprise }`
+                self.advance(); // consume 'enum'
+                self.expect(&TokenKind::LeftBrace)?;
+                let mut variants = Vec::new();
+                loop {
+                    if self.check(&TokenKind::RightBrace) {
+                        break;
+                    }
+                    variants.push(Variant {
+                        name: self.expect_ident()?,
+                        fields: vec![],
+                    });
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RightBrace)?;
+                // Represent inline enum as a named enum with a generated name
+                Type::Named(format!("{}_{}", name, field_name))
+            } else {
+                self.parse_type()?
+            };
+
+            // Check for nullable marker: `?`
+            let nullable = self.match_token(&TokenKind::QuestionMark);
+            let final_ty = if nullable {
+                Type::Option(Box::new(ty))
+            } else {
+                ty
+            };
+
+            fields.push(ContractField {
+                name: field_name,
+                ty: final_ty,
+                nullable,
+                span: field_span,
+            });
+
+            // Comma separator (optional before closing brace)
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(ContractDef { name, fields, is_pub, span })
+    }
+
+    /// Parse `app PayHive { manifest { ... } offline { ... } push { ... } router AppRouter { ... } }`
+    fn parse_app(&mut self, is_pub: bool) -> Result<AppDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::App)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut manifest = None;
+        let mut offline = None;
+        let mut push = None;
+        let mut router = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Manifest => {
+                    manifest = Some(self.parse_manifest_def()?);
+                }
+                TokenKind::Offline => {
+                    offline = Some(self.parse_offline_def()?);
+                }
+                TokenKind::Push => {
+                    push = Some(self.parse_push_def()?);
+                }
+                TokenKind::Router => {
+                    router = Some(self.parse_router()?);
+                }
+                _ => return Err(self.error("Expected manifest, offline, push, or router in app")),
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(AppDef { name, manifest, offline, push, router, is_pub, span })
+    }
+
+    /// Parse `manifest { name: "My App", short_name: "app", ... }`
+    fn parse_manifest_def(&mut self) -> Result<ManifestDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Manifest)?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut entries = Vec::new();
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let value = self.parse_expr()?;
+            entries.push((key, value));
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(ManifestDef { entries, span })
+    }
+
+    /// Parse `offline { precache: [...], strategy: "cache-first", fallback: OfflinePage }`
+    fn parse_offline_def(&mut self) -> Result<OfflineDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Offline)?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut precache = Vec::new();
+        let mut strategy = "cache-first".to_string();
+        let mut fallback = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "precache" => {
+                    self.expect(&TokenKind::LeftBracket)?;
+                    while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+                        if let TokenKind::StringLit(s) = self.peek_kind() {
+                            precache.push(s.clone());
+                            self.advance();
+                        } else {
+                            return Err(self.error("Expected string in precache list"));
+                        }
+                        self.match_token(&TokenKind::Comma);
+                    }
+                    self.expect(&TokenKind::RightBracket)?;
+                }
+                "strategy" => {
+                    if let TokenKind::StringLit(s) = self.peek_kind() {
+                        strategy = s.clone();
+                        self.advance();
+                    } else {
+                        return Err(self.error("Expected string for strategy"));
+                    }
+                }
+                "fallback" => {
+                    fallback = Some(self.expect_ident()?);
+                }
+                _ => return Err(self.error(&format!("Unknown offline key: {}", key))),
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(OfflineDef { precache, strategy, fallback, span })
+    }
+
+    /// Parse `push { vapid_key: "...", on_message: handle_push }`
+    fn parse_push_def(&mut self) -> Result<PushDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Push)?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut vapid_key = None;
+        let mut on_message = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "vapid_key" => {
+                    vapid_key = Some(self.parse_expr()?);
+                }
+                "on_message" => {
+                    on_message = Some(self.expect_ident()?);
+                }
+                _ => return Err(self.error(&format!("Unknown push key: {}", key))),
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(PushDef { vapid_key, on_message, span })
+    }
+
+    /// Parse `gesture swipe_left { ... }` or `gesture long_press on:card { ... }`
+    fn parse_gesture(&mut self) -> Result<GestureDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Gesture)?;
+        let gesture_type = self.expect_ident()?;
+
+        // Optional `on:target`
+        let target = if self.check(&TokenKind::On) {
+            self.advance(); // consume `on:`
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
+        let body = self.parse_block()?;
+        Ok(GestureDef { gesture_type, target, body, span })
+    }
+
     fn parse_store(&mut self, is_pub: bool) -> Result<StoreDef, ParseError> {
         let span = self.current_span();
         self.expect(&TokenKind::Store)?;
@@ -1276,6 +1559,7 @@ impl Parser {
             TokenKind::Let => {
                 self.advance();
                 let mutable = self.match_token(&TokenKind::Mut);
+                let secret = self.match_token(&TokenKind::Secret);
 
                 // Check for destructuring patterns: let (a, b) = ..., let Name { ... } = ..., let [a, b] = ...
                 if self.check(&TokenKind::LeftParen) || self.check(&TokenKind::LeftBracket) {
@@ -1323,12 +1607,13 @@ impl Parser {
 
                         let value = self.parse_expr()?;
                         self.expect(&TokenKind::Semicolon)?;
-                        Ok(Stmt::Let { name, ty, mutable, value, ownership })
+                        Ok(Stmt::Let { name, ty, mutable, secret, value, ownership })
                     }
                 }
             }
             TokenKind::Signal => {
                 self.advance();
+                let secret = self.match_token(&TokenKind::Secret);
                 let name = self.expect_ident()?;
                 let ty = if self.match_token(&TokenKind::Colon) {
                     Some(self.parse_type()?)
@@ -1338,7 +1623,7 @@ impl Parser {
                 self.expect(&TokenKind::Equals)?;
                 let value = self.parse_expr()?;
                 self.expect(&TokenKind::Semicolon)?;
-                Ok(Stmt::Signal { name, ty, value })
+                Ok(Stmt::Signal { name, ty, secret, value })
             }
             TokenKind::Return => {
                 self.advance();
@@ -1673,7 +1958,13 @@ impl Parser {
                     None
                 };
                 self.expect(&TokenKind::RightParen)?;
-                Ok(Expr::Fetch { url: Box::new(url), options })
+                // Optional contract binding: fetch(...) -> ContractName
+                let contract = if self.match_token(&TokenKind::Arrow) {
+                    Some(self.expect_ident()?)
+                } else {
+                    None
+                };
+                Ok(Expr::Fetch { url: Box::new(url), options, contract })
             }
             TokenKind::Navigate => {
                 self.advance();

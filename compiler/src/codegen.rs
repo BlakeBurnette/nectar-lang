@@ -202,6 +202,36 @@ impl WasmCodegen {
         self.line("(import \"webapi\" \"now\" (func $webapi_now (result f64)))");
         self.line("(import \"webapi\" \"requestAnimationFrame\" (func $webapi_requestAnimationFrame (param i32) (result i32)))");
 
+        // Import contract runtime — boundary validation and content hash checking
+        self.line("");
+        self.line(";; Contract runtime imports — API boundary validation");
+        self.line("(import \"contract\" \"validate\" (func $contract_validate (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"contract\" \"registerSchema\" (func $contract_registerSchema (param i32 i32 i32 i32 i32 i32)))");
+        self.line("(import \"contract\" \"getHash\" (func $contract_getHash (param i32 i32) (result i32 i32)))");
+
+        // PWA runtime imports
+        self.line("");
+        self.line(";; PWA runtime imports");
+        self.line("(import \"pwa\" \"registerManifest\" (func $pwa_registerManifest (param i32 i32)))");
+        self.line("(import \"pwa\" \"cachePrecache\" (func $pwa_cachePrecache (param i32 i32)))");
+        self.line("(import \"pwa\" \"setStrategy\" (func $pwa_setStrategy (param i32 i32)))");
+        self.line("(import \"pwa\" \"registerPush\" (func $pwa_registerPush (param i32 i32)))");
+
+        // Gesture runtime imports
+        self.line("");
+        self.line(";; Gesture runtime imports");
+        self.line("(import \"gesture\" \"registerSwipe\" (func $gesture_registerSwipe (param i32 i32 i32)))");
+        self.line("(import \"gesture\" \"registerLongPress\" (func $gesture_registerLongPress (param i32 i32 i32)))");
+        self.line("(import \"gesture\" \"registerPinch\" (func $gesture_registerPinch (param i32 i32)))");
+
+        // Hardware API imports
+        self.line("");
+        self.line(";; Hardware API imports");
+        self.line("(import \"hardware\" \"haptic\" (func $hardware_haptic (param i32)))");
+        self.line("(import \"hardware\" \"biometricAuth\" (func $hardware_biometricAuth (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"hardware\" \"cameraCapture\" (func $hardware_cameraCapture (param i32 i32 i32)))");
+        self.line("(import \"hardware\" \"geolocationCurrent\" (func $hardware_geolocationCurrent (param i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
@@ -274,6 +304,7 @@ impl WasmCodegen {
                 self.line(&format!(";; lazy component {}", lc.component.name));
                 self.generate_component(&lc.component);
             }
+            Item::Contract(c) => self.generate_contract(c),
             Item::Test(test) => self.generate_test(test),
             Item::Trait(t) => {
                 // Traits are erased at codegen (like Rust monomorphization).
@@ -287,9 +318,200 @@ impl WasmCodegen {
                     self.generate_function(method);
                 }
             }
+            Item::App(app) => self.generate_app(app),
             _ => {
                 self.line(&format!(";; TODO: codegen for {:?}", std::mem::discriminant(item)));
             }
+        }
+    }
+
+    /// Generate contract schema registration and validation function.
+    ///
+    /// For each contract, emits:
+    /// 1. A schema registration call at init time (field names, types, hash)
+    /// 2. An exported validation function callable from the runtime
+    ///
+    /// The content hash is computed from the canonical field representation:
+    ///   "field1:type1,field2:type2,..."
+    /// This hash is deterministic and changes only when the contract shape changes.
+    fn generate_contract(&mut self, contract: &ContractDef) {
+        use sha2::{Sha256, Digest};
+
+        self.line(&format!(";; === Contract: {} ===", contract.name));
+
+        // Build canonical representation for hashing
+        let mut canonical = String::new();
+        for (i, field) in contract.fields.iter().enumerate() {
+            if i > 0 {
+                canonical.push(',');
+            }
+            canonical.push_str(&field.name);
+            canonical.push(':');
+            canonical.push_str(&self.type_to_canonical(&field.ty));
+        }
+
+        // Compute SHA-256 hash, take first 8 hex chars as the short hash
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let hash_bytes = hasher.finalize();
+        let short_hash = format!("{:x}{:x}{:x}{:x}", hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]);
+
+        self.line(&format!(";; contract hash: {} (canonical: \"{}\")", short_hash, canonical));
+
+        // Store contract name and hash in linear memory
+        let name_offset = self.store_string(&contract.name);
+        let hash_offset = self.store_string(&short_hash);
+
+        // Build JSON schema string for the contract fields
+        let mut schema = String::from("{");
+        for (i, field) in contract.fields.iter().enumerate() {
+            if i > 0 {
+                schema.push(',');
+            }
+            schema.push('"');
+            schema.push_str(&field.name);
+            schema.push_str("\":{\"type\":\"");
+            schema.push_str(&self.type_to_json_schema_type(&field.ty));
+            schema.push('"');
+            if field.nullable {
+                schema.push_str(",\"nullable\":true");
+            }
+            schema.push('}');
+        }
+        schema.push('}');
+        let schema_offset = self.store_string(&schema);
+
+        // Emit registration function — called at module init
+        self.emit(&format!("(func $__contract_register_{} (export \"__contract_register_{}\")", contract.name, contract.name));
+        self.indent += 1;
+        self.line(&format!("i32.const {} ;; name ptr", name_offset));
+        self.line(&format!("i32.const {} ;; name len", contract.name.len()));
+        self.line(&format!("i32.const {} ;; hash ptr", hash_offset));
+        self.line(&format!("i32.const {} ;; hash len", short_hash.len()));
+        self.line(&format!("i32.const {} ;; schema ptr", schema_offset));
+        self.line(&format!("i32.const {} ;; schema len", schema.len()));
+        self.line("call $contract_registerSchema");
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    /// Convert an AST Type to a canonical string representation for hashing.
+    fn type_to_canonical(&self, ty: &Type) -> String {
+        match ty {
+            Type::Named(name) => name.clone(),
+            Type::Array(inner) => format!("[{}]", self.type_to_canonical(inner)),
+            Type::Option(inner) => format!("{}?", self.type_to_canonical(inner)),
+            Type::Result { ok, err } => format!("Result<{},{}>", self.type_to_canonical(ok), self.type_to_canonical(err)),
+            Type::Tuple(tys) => {
+                let parts: Vec<String> = tys.iter().map(|t| self.type_to_canonical(t)).collect();
+                format!("({})", parts.join(","))
+            }
+            Type::Generic { name, args } => {
+                let parts: Vec<String> = args.iter().map(|t| self.type_to_canonical(t)).collect();
+                format!("{}<{}>", name, parts.join(","))
+            }
+            Type::Reference { mutable, inner, .. } => {
+                if *mutable { format!("&mut {}", self.type_to_canonical(inner)) }
+                else { format!("&{}", self.type_to_canonical(inner)) }
+            }
+            Type::Function { params, ret } => {
+                let parts: Vec<String> = params.iter().map(|t| self.type_to_canonical(t)).collect();
+                format!("fn({})->{}", parts.join(","), self.type_to_canonical(ret))
+            }
+        }
+    }
+
+    /// Convert an AST Type to a JSON Schema type string.
+    fn type_to_json_schema_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Named(name) => match name.as_str() {
+                "i32" | "i64" | "u32" | "u64" => "integer".into(),
+                "f32" | "f64" => "number".into(),
+                "bool" => "boolean".into(),
+                "String" | "DateTime" => "string".into(),
+                _ => "object".into(),
+            },
+            Type::Array(_) => "array".into(),
+            Type::Option(inner) => self.type_to_json_schema_type(inner),
+            _ => "object".into(),
+        }
+    }
+
+    /// Generate PWA artifacts for an app definition.
+    fn generate_app(&mut self, app: &AppDef) {
+        self.line(&format!(";; === PWA App: {} ===", app.name));
+
+        // Emit manifest.webmanifest JSON from ManifestDef
+        if let Some(ref manifest) = app.manifest {
+            let mut json = String::from("{");
+            for (i, (key, value)) in manifest.entries.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                json.push('"');
+                json.push_str(key);
+                json.push_str("\":");
+                match value {
+                    Expr::StringLit(s) => {
+                        json.push('"');
+                        json.push_str(s);
+                        json.push('"');
+                    }
+                    Expr::Integer(n) => json.push_str(&n.to_string()),
+                    Expr::Bool(b) => json.push_str(if *b { "true" } else { "false" }),
+                    _ => json.push_str("null"),
+                }
+            }
+            json.push('}');
+            let manifest_offset = self.store_string(&json);
+            self.line(&format!(";; manifest JSON at offset {}, len {}", manifest_offset, json.len()));
+
+            // Emit manifest registration function
+            self.emit(&format!("(func $__app_{}_register_manifest (export \"__app_{}_register_manifest\")", app.name, app.name));
+            self.indent += 1;
+            self.line(&format!("i32.const {} ;; manifest json ptr", manifest_offset));
+            self.line(&format!("i32.const {} ;; manifest json len", json.len()));
+            self.line("call $pwa_registerManifest");
+            self.indent -= 1;
+            self.line(")");
+        }
+
+        // Generate service worker registration for offline support
+        if let Some(ref offline) = app.offline {
+            let urls_json: String = offline.precache.iter()
+                .map(|u| format!("\"{}\"", u))
+                .collect::<Vec<_>>()
+                .join(",");
+            let urls_str = format!("[{}]", urls_json);
+            let urls_offset = self.store_string(&urls_str);
+            let strategy_offset = self.store_string(&offline.strategy);
+
+            self.emit(&format!("(func $__app_{}_register_sw (export \"__app_{}_register_sw\")", app.name, app.name));
+            self.indent += 1;
+            self.line(&format!("i32.const {} ;; precache urls ptr", urls_offset));
+            self.line(&format!("i32.const {} ;; precache urls len", urls_str.len()));
+            self.line("call $pwa_cachePrecache");
+            self.line(&format!("i32.const {} ;; strategy ptr", strategy_offset));
+            self.line(&format!("i32.const {} ;; strategy len", offline.strategy.len()));
+            self.line("call $pwa_setStrategy");
+            self.indent -= 1;
+            self.line(")");
+        }
+
+        // Generate push notification setup
+        if let Some(ref push) = app.push {
+            self.emit(&format!("(func $__app_{}_register_push (export \"__app_{}_register_push\")", app.name, app.name));
+            self.indent += 1;
+            if let Some(ref key_expr) = push.vapid_key {
+                if let Expr::StringLit(key) = key_expr {
+                    let key_offset = self.store_string(key);
+                    self.line(&format!("i32.const {} ;; vapid key ptr", key_offset));
+                    self.line(&format!("i32.const {} ;; vapid key len", key.len()));
+                    self.line("call $pwa_registerPush");
+                }
+            }
+            self.indent -= 1;
+            self.line(")");
         }
     }
 
@@ -1353,8 +1575,12 @@ impl WasmCodegen {
                 // and the runtime resumes execution when resolved.
                 self.line("call $signal_get ;; resolve promise handle");
             }
-            Expr::Fetch { url, options } => {
-                self.line(";; fetch — HTTP request");
+            Expr::Fetch { url, options, contract } => {
+                if let Some(contract_name) = contract {
+                    self.line(&format!(";; fetch -> {} — HTTP request with contract boundary validation", contract_name));
+                } else {
+                    self.line(";; fetch — HTTP request");
+                }
                 self.generate_expr(url);
                 // URL is a string (ptr, len already on stack)
                 if let Some(opts) = options {
@@ -1366,6 +1592,14 @@ impl WasmCodegen {
                     self.line("i32.const 3 ;; method len");
                 }
                 self.line("call $http_fetch");
+                // If a contract is bound, validate the response against the schema
+                if let Some(contract_name) = contract {
+                    self.line(&format!(";; validate response against contract {}", contract_name));
+                    let name_offset = self.store_string(contract_name);
+                    self.line(&format!("i32.const {} ;; contract name ptr", name_offset));
+                    self.line(&format!("i32.const {} ;; contract name len", contract_name.len()));
+                    self.line("call $contract_validate");
+                }
             }
             Expr::Spawn { body } => {
                 self.line(";; spawn — launch task on Web Worker");
@@ -2549,6 +2783,7 @@ mod closure_codegen_tests {
                         name: "f".to_string(),
                         ty: None,
                         mutable: false,
+                        secret: false,
                         value: Expr::Closure {
                             params: vec![("x".to_string(), Some(Type::Named("i32".to_string())))],
                             body: Box::new(Expr::Binary {

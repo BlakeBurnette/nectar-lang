@@ -25,6 +25,90 @@ pub enum Item {
     LazyComponent(LazyComponentDef),
     /// Test block — `test "description" { ... }`
     Test(TestDef),
+    /// Contract — API boundary type with runtime validation and content hashing.
+    ///
+    /// ```nectar
+    /// contract CustomerResponse {
+    ///     id: u32,
+    ///     name: String,
+    ///     email: String,
+    ///     balance_cents: i64,
+    ///     tier: enum { free, pro, enterprise },
+    ///     addresses: [Address],
+    ///     deleted_at: DateTime?,
+    /// }
+    /// ```
+    Contract(ContractDef),
+    /// PWA app definition — root-level application with manifest, offline support, push
+    App(AppDef),
+}
+
+/// Contract definition — an API boundary type that generates:
+/// 1. Compile-time field access checking (like structs)
+/// 2. A content hash baked into the WASM binary for wire-level staleness detection
+/// 3. A WASM-native runtime validator that checks every API response before it enters the app
+///
+/// Contracts are structurally similar to structs but semantically different: they define
+/// the shape of *external* data (API responses, WebSocket messages, etc.) and enforce
+/// that untrusted data is validated before it can be used in typed Nectar code.
+#[derive(Debug)]
+pub struct ContractDef {
+    pub name: String,
+    pub fields: Vec<ContractField>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// A field within a contract definition.
+/// Unlike struct fields, contract fields can have inline enum types.
+#[derive(Debug)]
+pub struct ContractField {
+    pub name: String,
+    pub ty: Type,
+    pub nullable: bool,
+    pub span: Span,
+}
+
+/// App definition — root-level PWA application with manifest, offline support, push
+#[derive(Debug)]
+pub struct AppDef {
+    pub name: String,
+    pub manifest: Option<ManifestDef>,
+    pub offline: Option<OfflineDef>,
+    pub push: Option<PushDef>,
+    pub router: Option<RouterDef>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct ManifestDef {
+    pub entries: Vec<(String, Expr)>,  // name-value pairs
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct OfflineDef {
+    pub precache: Vec<String>,
+    pub strategy: String,
+    pub fallback: Option<String>,  // component name
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct PushDef {
+    pub vapid_key: Option<Expr>,
+    pub on_message: Option<String>,  // handler function name
+    pub span: Span,
+}
+
+/// Gesture definition inside a component
+#[derive(Debug)]
+pub struct GestureDef {
+    pub gesture_type: String,   // swipe_left, swipe_right, long_press, pinch, etc.
+    pub target: Option<String>, // on:element_name, or None for the component root
+    pub body: Block,
+    pub span: Span,
 }
 
 /// Test definition — a named block of test code
@@ -87,8 +171,19 @@ pub struct Component {
     pub transitions: Vec<TransitionDef>,
     pub trait_bounds: Vec<TraitBound>,
     pub render: RenderBlock,
+    pub permissions: Option<PermissionsDef>,
+    pub gestures: Vec<GestureDef>,
     pub skeleton: Option<SkeletonDef>,
     pub error_boundary: Option<ErrorBoundary>,
+    pub span: Span,
+}
+
+/// Permission declaration inside a component
+#[derive(Debug)]
+pub struct PermissionsDef {
+    pub network: Vec<String>,      // allowed URL patterns
+    pub storage: Vec<String>,      // allowed storage keys
+    pub capabilities: Vec<String>, // camera, geolocation, etc.
     pub span: Span,
 }
 
@@ -130,6 +225,7 @@ pub struct StateField {
     pub name: String,
     pub ty: Option<Type>,
     pub mutable: bool,
+    pub secret: bool,
     pub initializer: Expr,
     pub ownership: Ownership,
 }
@@ -481,12 +577,14 @@ pub enum Stmt {
         name: String,
         ty: Option<Type>,
         mutable: bool,
+        secret: bool,
         value: Expr,
         ownership: Ownership,
     },
     Signal {
         name: String,
         ty: Option<Type>,
+        secret: bool,
         value: Expr,
     },
     /// Destructuring let — `let (a, b) = expr;`, `let User { name, .. } = expr;`, etc.
@@ -586,9 +684,15 @@ pub enum Expr {
 
     // HTTP fetch — first-class API communication
     // fetch(url, { method, headers, body })
+    // fetch(url) -> ContractName  — validates response against contract
     Fetch {
         url: Box<Expr>,
         options: Option<Box<Expr>>,
+        /// Optional contract type for response validation.
+        /// When present, the response is validated against the contract's schema
+        /// before entering the app, and the request includes an
+        /// `X-Nectar-Contract: Name@hash` header for staleness detection.
+        contract: Option<String>,
     },
 
     // Closure / lambda

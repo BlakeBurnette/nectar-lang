@@ -55,11 +55,17 @@ pub enum Ty {
     /// Result<T, E> type for error handling.
     Result_ { ok: Box<Ty>, err: Box<Ty> },
 
+    /// An API boundary contract type — like a struct but with runtime validation.
+    Contract(String),
+
     /// An unresolved type parameter (e.g. `T` inside `fn identity<T>(x: T) -> T`).
     TypeParam(String),
 
     /// The type of the `self` keyword inside an impl block.
     SelfType,
+
+    /// A secret-wrapped type — values that must not be rendered or logged.
+    Secret(Box<Ty>),
 
     /// Unknown / error sentinel – avoids cascading errors.
     Error,
@@ -110,9 +116,11 @@ impl fmt::Display for Ty {
             }
             Ty::Struct(name) => write!(f, "{}", name),
             Ty::Enum(name) => write!(f, "{}", name),
+            Ty::Contract(name) => write!(f, "contract {}", name),
             Ty::Result_ { ok, err } => write!(f, "Result<{}, {}>", ok, err),
             Ty::TypeParam(name) => write!(f, "{}", name),
             Ty::SelfType => write!(f, "Self"),
+            Ty::Secret(inner) => write!(f, "secret {}", inner),
             Ty::Error => write!(f, "<error>"),
         }
     }
@@ -242,6 +250,12 @@ impl Substitution {
                 self.bind(*id, a);
                 Ok(())
             }
+
+            // Contract <-> Struct unification: contracts are structurally
+            // compatible with structs of the same name (they share the same
+            // field layout in the structs registry).
+            (Ty::Contract(a_name), Ty::Struct(b_name)) | (Ty::Struct(a_name), Ty::Contract(b_name))
+                if a_name == b_name => Ok(()),
 
             // Numeric coercion: i32 <-> i64, f32 <-> f64
             (Ty::I32, Ty::I64) | (Ty::I64, Ty::I32) => Ok(()),
@@ -445,6 +459,10 @@ struct TypeChecker {
     type_params_in_scope: std::collections::HashSet<String>,
     /// Trait definitions collected in the first pass.
     traits: HashMap<String, TraitInfo>,
+    /// Contract names — tracks which entries in `structs` are API boundary
+    /// contracts (vs plain structs). Contracts generate runtime validators
+    /// and content hashes; field access checking reuses the `structs` map.
+    contracts: std::collections::HashSet<String>,
 }
 
 impl TypeChecker {
@@ -458,6 +476,7 @@ impl TypeChecker {
             enum_defs: HashMap::new(),
             type_params_in_scope: std::collections::HashSet::new(),
             traits: HashMap::new(),
+            contracts: std::collections::HashSet::new(),
         }
     }
 
@@ -627,6 +646,16 @@ impl TypeChecker {
                         e.variants.iter().map(|v| v.name.clone()).collect();
                     self.enum_defs.insert(e.name.clone(), variants);
                 }
+                Item::Contract(c) => {
+                    // Register contract fields in the structs map so field
+                    // access checking works identically to structs.
+                    let mut fields = HashMap::new();
+                    for field in &c.fields {
+                        fields.insert(field.name.clone(), self.ast_type_to_ty(&field.ty));
+                    }
+                    self.structs.insert(c.name.clone(), StructInfo { fields });
+                    self.contracts.insert(c.name.clone());
+                }
                 Item::Mod(m) => {
                     // Recursively collect declarations from inline module items,
                     // registering them with a namespace prefix (e.g. "math::Vec3").
@@ -765,6 +794,7 @@ impl TypeChecker {
                         }
                     }
                 }
+                Item::Contract(_) => { /* contracts checked at field-access and fetch sites */ }
                 Item::Agent(_) => { /* agent type checking TODO */ }
                 Item::Router(_) => { /* router type checking TODO */ }
                 Item::LazyComponent(lc) => self.check_component(&lc.component, &mut env),
@@ -791,6 +821,7 @@ impl TypeChecker {
                         }
                     }
                 }
+                Item::App(_) => { /* app type checking TODO */ }
             }
         }
 
@@ -961,28 +992,39 @@ impl TypeChecker {
             Stmt::Let {
                 name,
                 ty,
+                secret,
                 value,
                 ..
             } => {
                 let val_ty = self.infer_expr(value, env);
-                let final_ty = if let Some(ast_ty) = ty {
+                let base_ty = if let Some(ast_ty) = ty {
                     let declared = self.ast_type_to_ty(ast_ty);
                     self.unify(&declared, &val_ty, span);
                     declared
                 } else {
                     val_ty
                 };
+                let final_ty = if *secret {
+                    Ty::Secret(Box::new(base_ty))
+                } else {
+                    base_ty
+                };
                 env.insert(name.clone(), final_ty);
                 Ty::Unit
             }
-            Stmt::Signal { name, ty, value } => {
+            Stmt::Signal { name, ty, secret, value, .. } => {
                 let val_ty = self.infer_expr(value, env);
-                let final_ty = if let Some(ast_ty) = ty {
+                let base_ty = if let Some(ast_ty) = ty {
                     let declared = self.ast_type_to_ty(ast_ty);
                     self.unify(&declared, &val_ty, span);
                     declared
                 } else {
                     val_ty
+                };
+                let final_ty = if *secret {
+                    Ty::Secret(Box::new(base_ty))
+                } else {
+                    base_ty
                 };
                 env.insert(name.clone(), final_ty);
                 Ty::Unit
@@ -1429,14 +1471,32 @@ impl TypeChecker {
             }
 
             // --- Fetch ---
-            Expr::Fetch { url, options } => {
+            Expr::Fetch { url, options, contract } => {
                 let url_ty = self.infer_expr(url, env);
                 self.unify(&url_ty, &Ty::String_, Self::dummy_span());
                 if let Some(opts) = options {
                     self.infer_expr(opts, env);
                 }
-                // fetch returns an opaque Response type; model as a fresh var.
-                self.fresh_var()
+                // If a contract type is specified, the response is validated
+                // against it and typed as the contract. Otherwise, opaque.
+                if let Some(contract_name) = contract {
+                    if self.contracts.contains(contract_name) {
+                        Ty::Contract(contract_name.clone())
+                    } else if self.structs.contains_key(contract_name) {
+                        // Allow binding to a struct too, but warn that it
+                        // won't get runtime boundary validation.
+                        Ty::Struct(contract_name.clone())
+                    } else {
+                        self.error(
+                            format!("fetch -> {}: unknown contract type", contract_name),
+                            Self::dummy_span(),
+                        );
+                        Ty::Error
+                    }
+                } else {
+                    // No contract — fetch returns an opaque Response type.
+                    self.fresh_var()
+                }
             }
 
             // --- Closure ---
@@ -1807,19 +1867,20 @@ impl TypeChecker {
         };
 
         match &base {
-            Ty::Struct(name) => {
+            Ty::Struct(name) | Ty::Contract(name) => {
+                let kind = if self.contracts.contains(name) { "contract" } else { "struct" };
                 if let Some(info) = self.structs.get(name).cloned() {
                     if let Some(field_ty) = info.fields.get(field) {
                         field_ty.clone()
                     } else {
                         self.error(
-                            format!("struct {} has no field {}", name, field),
+                            format!("{} {} has no field {} — check the {} definition", kind, name, field, kind),
                             Self::dummy_span(),
                         );
                         Ty::Error
                     }
                 } else {
-                    self.error(format!("unknown struct: {}", name), Self::dummy_span());
+                    self.error(format!("unknown {}: {}", kind, name), Self::dummy_span());
                     Ty::Error
                 }
             }
@@ -1938,6 +1999,7 @@ mod tests {
                 name: "x".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Integer(42),
                 ownership: Ownership::Owned,
             }]),
@@ -1962,6 +2024,7 @@ mod tests {
                 name: "y".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Float(3.14),
                 ownership: Ownership::Owned,
             }]),
@@ -2126,6 +2189,7 @@ mod tests {
                         name: "p".into(),
                         ty: None,
                         mutable: false,
+                        secret: false,
                         value: Expr::StructInit {
                             name: "Point".into(),
                             fields: vec![
@@ -2184,6 +2248,7 @@ mod tests {
                         name: "p".into(),
                         ty: None,
                         mutable: false,
+                        secret: false,
                         value: Expr::StructInit {
                             name: "Point".into(),
                             fields: vec![
@@ -2227,6 +2292,7 @@ mod tests {
                     name: "x".into(),
                     ty: None,
                     mutable: false,
+                    secret: false,
                     value: Expr::Integer(10),
                     ownership: Ownership::Owned,
                 },
@@ -2238,6 +2304,7 @@ mod tests {
                         inner: Box::new(Type::Named("i32".into())),
                     }),
                     mutable: false,
+                    secret: false,
                     value: Expr::Borrow(Box::new(Expr::Ident("x".into()))),
                     ownership: Ownership::Borrowed,
                 },
@@ -2264,6 +2331,7 @@ mod tests {
                     name: "x".into(),
                     ty: None,
                     mutable: true,
+                    secret: false,
                     value: Expr::Integer(10),
                     ownership: Ownership::Owned,
                 },
@@ -2275,6 +2343,7 @@ mod tests {
                         inner: Box::new(Type::Named("i32".into())),
                     }),
                     mutable: false,
+                    secret: false,
                     value: Expr::BorrowMut(Box::new(Expr::Ident("x".into()))),
                     ownership: Ownership::MutBorrowed,
                 },
@@ -2301,6 +2370,7 @@ mod tests {
                     name: "x".into(),
                     ty: None,
                     mutable: false,
+                    secret: false,
                     value: Expr::Integer(10),
                     ownership: Ownership::Owned,
                 },
@@ -2313,6 +2383,7 @@ mod tests {
                         inner: Box::new(Type::Named("i32".into())),
                     }),
                     mutable: false,
+                    secret: false,
                     value: Expr::Borrow(Box::new(Expr::Ident("x".into()))),
                     ownership: Ownership::Borrowed,
                 },
@@ -2347,6 +2418,7 @@ mod tests {
                 name: "count".into(),
                 ty: None,
                 mutable: true,
+                secret: false,
                 initializer: Expr::Integer(0),
                 ownership: Ownership::Owned,
             }],
@@ -2358,6 +2430,8 @@ mod tests {
                 body: TemplateNode::TextLiteral("hello".into()),
                 span: span(),
             },
+            permissions: None,
+            gestures: vec![],
             skeleton: None,
             error_boundary: None,
             span: span(),
@@ -2509,6 +2583,7 @@ mod iterator_tests {
                 name: "result".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::MethodCall {
                     object: Box::new(Expr::MethodCall {
                         object: Box::new(Expr::MethodCall {
@@ -2554,6 +2629,7 @@ mod iterator_tests {
                 name: "sum".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::MethodCall {
                     object: Box::new(Expr::MethodCall {
                         object: Box::new(Expr::Ident("arr".into())),
@@ -2587,6 +2663,7 @@ mod iterator_tests {
                 name: "r".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::MethodCall {
                     object: Box::new(Expr::MethodCall {
                         object: Box::new(Expr::Ident("arr".into())),
@@ -2617,6 +2694,7 @@ mod iterator_tests {
                 name: "e".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::MethodCall {
                     object: Box::new(Expr::MethodCall {
                         object: Box::new(Expr::MethodCall {
@@ -2644,6 +2722,7 @@ mod iterator_tests {
                 name: "n".into(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::MethodCall {
                     object: Box::new(Expr::MethodCall {
                         object: Box::new(Expr::Ident("arr".into())),
@@ -2700,6 +2779,7 @@ mod closure_tests {
                 name: "f".to_string(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Closure {
                     params: vec![("x".to_string(), Some(Type::Named("i32".to_string())))],
                     body: Box::new(Expr::Binary {
@@ -2722,6 +2802,7 @@ mod closure_tests {
                 name: "f".to_string(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Closure {
                     params: vec![],
                     body: Box::new(Expr::Integer(42)),

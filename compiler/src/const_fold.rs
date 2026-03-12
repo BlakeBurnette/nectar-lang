@@ -69,6 +69,8 @@ fn fold_item(item: &mut Item, stats: &mut FoldStats) {
         }
         Item::Struct(_) | Item::Enum(_) | Item::Use(_)
         | Item::Router(_) | Item::LazyComponent(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
+            Item::Contract(_) => {}
+            Item::App(_) => {}
     }
 }
 
@@ -175,7 +177,7 @@ pub fn fold_expr(expr: &mut Expr, stats: &mut FoldStats) {
             fold_expr(body, stats);
             fold_expr(catch_body, stats);
         }
-        Expr::Fetch { url, options } => {
+        Expr::Fetch { url, options, .. } => {
             fold_expr(url, stats);
             if let Some(opts) = options {
                 fold_expr(opts, stats);

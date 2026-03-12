@@ -2102,7 +2102,126 @@ class NectarRuntime {
           return 0;
         },
       },
+
+      // --- Contract runtime — API boundary validation ---
+      contract: {
+        /**
+         * Register a contract schema. Called at WASM module init for each
+         * contract definition. Stores the schema and content hash so that:
+         * - fetch -> ContractName can validate responses at the boundary
+         * - X-Nectar-Contract headers include the hash for staleness detection
+         */
+        registerSchema: (namePtr, nameLen, hashPtr, hashLen, schemaPtr, schemaLen) => {
+          const name = this.readString(namePtr, nameLen);
+          const hash = this.readString(hashPtr, hashLen);
+          const schemaJson = this.readString(schemaPtr, schemaLen);
+          if (!this._contracts) this._contracts = new Map();
+          try {
+            const schema = JSON.parse(schemaJson);
+            this._contracts.set(name, { hash, schema, name });
+          } catch (e) {
+            console.warn(`[Nectar Contract] Failed to parse schema for ${name}:`, e);
+            this._contracts.set(name, { hash, schema: {}, name });
+          }
+        },
+
+        /**
+         * Validate a fetch response against a registered contract.
+         * Called after $http_fetch when a contract type is specified.
+         *
+         * Returns the response handle if valid, or throws a ContractError
+         * with actionable details if the response shape doesn't match.
+         */
+        validate: (responseHandle, _responseUnused, namePtr, nameLen) => {
+          const name = this.readString(namePtr, nameLen);
+          if (!this._contracts || !this._contracts.has(name)) {
+            console.warn(`[Nectar Contract] Unknown contract: ${name}`);
+            return responseHandle;
+          }
+          const contract = this._contracts.get(name);
+
+          // Get the pending fetch response body (stored by http.fetch)
+          const pending = this.pendingFetches.get(responseHandle);
+          if (!pending || !pending._body) return responseHandle;
+
+          let body;
+          try {
+            body = typeof pending._body === 'string'
+              ? JSON.parse(pending._body)
+              : pending._body;
+          } catch {
+            const err = new Error(
+              `[Nectar Contract] ${name}: response is not valid JSON`
+            );
+            err.contract = name;
+            err.type = 'contract_parse_error';
+            throw err;
+          }
+
+          // Validate each field in the contract schema
+          const missing = [];
+          const wrongType = [];
+          for (const [field, spec] of Object.entries(contract.schema)) {
+            if (!(field in body)) {
+              if (!spec.nullable) {
+                missing.push(field);
+              }
+              continue;
+            }
+            const value = body[field];
+            const actual = Array.isArray(value) ? 'array' : typeof value;
+            const expected = spec.type;
+            if (value === null && spec.nullable) continue;
+            if (expected === 'integer' && (typeof value !== 'number' || !Number.isInteger(value))) {
+              wrongType.push({ field, expected: 'integer', actual });
+            } else if (expected === 'number' && typeof value !== 'number') {
+              wrongType.push({ field, expected: 'number', actual });
+            } else if (expected === 'string' && typeof value !== 'string') {
+              wrongType.push({ field, expected: 'string', actual });
+            } else if (expected === 'boolean' && typeof value !== 'boolean') {
+              wrongType.push({ field, expected: 'boolean', actual });
+            } else if (expected === 'array' && !Array.isArray(value)) {
+              wrongType.push({ field, expected: 'array', actual });
+            }
+          }
+
+          if (missing.length > 0 || wrongType.length > 0) {
+            const details = [];
+            if (missing.length) details.push(`missing fields: ${missing.join(', ')}`);
+            if (wrongType.length) details.push(
+              `type mismatches: ${wrongType.map(w => `${w.field} (expected ${w.expected}, got ${w.actual})`).join(', ')}`
+            );
+            const err = new Error(
+              `[Nectar Contract] ${name}@${contract.hash}: boundary validation failed — ${details.join('; ')}`
+            );
+            err.contract = name;
+            err.hash = contract.hash;
+            err.missing = missing;
+            err.wrongType = wrongType;
+            err.type = 'contract_mismatch';
+            throw err;
+          }
+
+          return responseHandle;
+        },
+
+        /**
+         * Get the content hash for a contract. Used to set the
+         * X-Nectar-Contract header on outgoing requests.
+         */
+        getHash: (namePtr, nameLen) => {
+          const name = this.readString(namePtr, nameLen);
+          if (!this._contracts || !this._contracts.has(name)) {
+            return 0; // null ptr — no hash available
+          }
+          const hash = this._contracts.get(name).hash;
+          const headerVal = `${name}@${hash}`;
+          return this.writeString(headerVal);
+        },
+      },
     };
+
+    // Auto-register contracts after WASM init — see post-init section below
 
     // Create hidden aria-live regions for screen reader announcements
     if (typeof document !== "undefined") {
@@ -2134,8 +2253,15 @@ class NectarRuntime {
       this.workerPool = new WorkerPool(bytes, importObject);
     }
 
-    // Initialize stores — call any *_init exports
+    // Register contracts — call __contract_register_* exports
     const allExports = Object.keys(instance.exports);
+    for (const name of allExports) {
+      if (name.startsWith("__contract_register_")) {
+        instance.exports[name]();
+      }
+    }
+
+    // Initialize stores — call any *_init exports
     for (const name of allExports) {
       if (name.endsWith("_init")) {
         instance.exports[name]();
@@ -2181,6 +2307,200 @@ class NectarRuntime {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Gesture recognition runtime
+// ---------------------------------------------------------------------------
+
+const GestureRuntime = {
+  _handlers: new Map(),
+  _nextId: 1,
+
+  registerSwipe(elementHandle, direction, callbackIdx) {
+    const element = document.querySelector(`[data-nectar-id="${elementHandle}"]`) || document.body;
+    let startX = 0, startY = 0;
+    const threshold = 50;
+
+    element.addEventListener("touchstart", (e) => {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    }, { passive: true });
+
+    element.addEventListener("touchend", (e) => {
+      const dx = e.changedTouches[0].clientX - startX;
+      const dy = e.changedTouches[0].clientY - startY;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDx > threshold && absDx > absDy) {
+        if ((direction === 0 && dx < 0) || (direction === 1 && dx > 0)) {
+          // 0 = swipe_left, 1 = swipe_right
+          if (typeof callbackIdx === "function") callbackIdx();
+          else if (this._instance) this._instance.exports.__gesture_callback(callbackIdx);
+        }
+      } else if (absDy > threshold && absDy > absDx) {
+        if ((direction === 2 && dy < 0) || (direction === 3 && dy > 0)) {
+          // 2 = swipe_up, 3 = swipe_down
+          if (typeof callbackIdx === "function") callbackIdx();
+          else if (this._instance) this._instance.exports.__gesture_callback(callbackIdx);
+        }
+      }
+    }, { passive: true });
+  },
+
+  registerLongPress(elementHandle, callbackIdx, durationMs) {
+    const element = document.querySelector(`[data-nectar-id="${elementHandle}"]`) || document.body;
+    const duration = durationMs || 500;
+    let timer = null;
+
+    element.addEventListener("touchstart", () => {
+      timer = setTimeout(() => {
+        if (typeof callbackIdx === "function") callbackIdx();
+        else if (this._instance) this._instance.exports.__gesture_callback(callbackIdx);
+      }, duration);
+    }, { passive: true });
+
+    element.addEventListener("touchend", () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }, { passive: true });
+
+    element.addEventListener("touchmove", () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }, { passive: true });
+  },
+
+  registerPinch(elementHandle, callbackIdx) {
+    const element = document.querySelector(`[data-nectar-id="${elementHandle}"]`) || document.body;
+    let initialDistance = null;
+
+    element.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialDistance = Math.sqrt(dx * dx + dy * dy);
+      }
+    }, { passive: true });
+
+    element.addEventListener("touchmove", (e) => {
+      if (e.touches.length === 2 && initialDistance !== null) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDistance = Math.sqrt(dx * dx + dy * dy);
+        const scale = currentDistance / initialDistance;
+        if (typeof callbackIdx === "function") callbackIdx(scale);
+        else if (this._instance) this._instance.exports.__gesture_callback(callbackIdx);
+      }
+    }, { passive: true });
+
+    element.addEventListener("touchend", () => { initialDistance = null; }, { passive: true });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Hardware APIs runtime
+// ---------------------------------------------------------------------------
+
+const HardwareRuntime = {
+  haptic(pattern) {
+    if (navigator.vibrate) {
+      navigator.vibrate(pattern);
+    }
+  },
+
+  biometricAuth(challengePtr, challengeLen, rpPtr, rpLen) {
+    // WebAuthn-based biometric authentication
+    if (!window.PublicKeyCredential) return -1;
+    // Async operation — returns a promise handle
+    const challenge = new Uint8Array(this._memory.buffer, challengePtr, challengeLen);
+    const rpId = new TextDecoder().decode(new Uint8Array(this._memory.buffer, rpPtr, rpLen));
+    navigator.credentials.get({
+      publicKey: {
+        challenge: challenge,
+        rpId: rpId,
+        userVerification: "required",
+      },
+    }).then((credential) => {
+      if (this._instance) this._instance.exports.__biometric_callback(1);
+    }).catch(() => {
+      if (this._instance) this._instance.exports.__biometric_callback(0);
+    });
+    return 0;
+  },
+
+  cameraCapture(facingPtr, facingLen, callbackIdx) {
+    const facing = new TextDecoder().decode(new Uint8Array(this._memory.buffer, facingPtr, facingLen));
+    const constraints = {
+      video: { facingMode: facing || "environment" },
+    };
+    navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.play();
+      // Callback with stream handle
+      if (this._instance) this._instance.exports.__camera_callback(callbackIdx, 1);
+    }).catch(() => {
+      if (this._instance) this._instance.exports.__camera_callback(callbackIdx, 0);
+    });
+  },
+
+  geolocationCurrent(callbackIdx) {
+    if (!navigator.geolocation) {
+      if (this._instance) this._instance.exports.__geolocation_callback(callbackIdx, 0, 0, 0);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (this._instance) {
+          // Pack lat/lng as f64 — caller reads from linear memory
+          this._instance.exports.__geolocation_callback(
+            callbackIdx, 1,
+            pos.coords.latitude, pos.coords.longitude
+          );
+        }
+      },
+      () => {
+        if (this._instance) this._instance.exports.__geolocation_callback(callbackIdx, 0, 0, 0);
+      }
+    );
+  },
+};
+
+// ---------------------------------------------------------------------------
+// PWA runtime
+// ---------------------------------------------------------------------------
+
+const PwaRuntime = {
+  registerManifest(jsonPtr, jsonLen) {
+    const json = new TextDecoder().decode(new Uint8Array(this._memory.buffer, jsonPtr, jsonLen));
+    const blob = new Blob([json], { type: "application/manifest+json" });
+    const url = URL.createObjectURL(blob);
+    let link = document.querySelector('link[rel="manifest"]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "manifest";
+      document.head.appendChild(link);
+    }
+    link.href = url;
+  },
+
+  cachePrecache(urlsPtr, urlsLen) {
+    const urlsJson = new TextDecoder().decode(new Uint8Array(this._memory.buffer, urlsPtr, urlsLen));
+    try {
+      const urls = JSON.parse(urlsJson);
+      if ("caches" in window) {
+        caches.open("nectar-precache-v1").then((cache) => cache.addAll(urls));
+      }
+    } catch (e) {
+      console.warn("[nectar] Failed to parse precache URLs:", e);
+    }
+  },
+
+  registerServiceWorker(swPath) {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register(swPath || "/nectar-service-worker.js");
+    }
+  },
+};
+
 // Export for use
 if (typeof module !== "undefined") {
   module.exports = {
@@ -2190,6 +2510,9 @@ if (typeof module !== "undefined") {
     Router,
     Effect,
     Scheduler,
+    GestureRuntime,
+    HardwareRuntime,
+    PwaRuntime,
     createEffect,
     createMemo,
     batch,
@@ -2200,6 +2523,9 @@ if (typeof window !== "undefined") {
   window.NectarRuntime = NectarRuntime;
   window.AgentManager = AgentManager;
   window.Router = Router;
+  window.GestureRuntime = GestureRuntime;
+  window.HardwareRuntime = HardwareRuntime;
+  window.PwaRuntime = PwaRuntime;
   window.createEffect = createEffect;
   window.createMemo = createMemo;
   window.batch = batch;

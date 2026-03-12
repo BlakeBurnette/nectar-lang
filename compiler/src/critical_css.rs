@@ -186,7 +186,7 @@ mod tests {
     use crate::token::Span;
 
     fn dummy_span() -> Span {
-        Span { line: 0, col: 0, offset: 0 }
+        Span::new(0, 0, 0, 0)
     }
 
     #[test]
@@ -243,6 +243,8 @@ mod tests {
                         body: TemplateNode::Fragment(vec![]),
                         span: dummy_span(),
                     },
+                    permissions: None,
+                    gestures: vec![],
                     skeleton: None,
                     error_boundary: None,
                     span: dummy_span(),
@@ -265,6 +267,8 @@ mod tests {
                             body: TemplateNode::Fragment(vec![]),
                             span: dummy_span(),
                         },
+                        permissions: None,
+                        gestures: vec![],
                         skeleton: None,
                         error_boundary: None,
                         span: dummy_span(),

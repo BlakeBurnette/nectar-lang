@@ -249,7 +249,7 @@ fn collect_references_in_expr(expr: &Expr, refs: &mut HashSet<String>) {
             collect_references_in_expr(body, refs);
             collect_references_in_expr(catch_body, refs);
         }
-        Expr::Fetch { url, options } => {
+        Expr::Fetch { url, options, .. } => {
             collect_references_in_expr(url, refs);
             if let Some(opts) = options { collect_references_in_expr(opts, refs); }
         }
@@ -463,6 +463,7 @@ mod tests {
                 name: "unused_var".to_string(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Integer(42),
                 ownership: Ownership::Owned,
             },
@@ -491,6 +492,7 @@ mod tests {
                 name: "x".to_string(),
                 ty: None,
                 mutable: false,
+                secret: false,
                 value: Expr::Integer(42),
                 ownership: Ownership::Owned,
             },

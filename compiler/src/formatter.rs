@@ -125,6 +125,17 @@ impl Formatter {
                 self.format_component_inner(&lc.component);
             }
             Item::Test(t) => self.format_test(t),
+            Item::Contract(_) => {}
+            Item::App(app) => {
+                self.push_indent();
+                if app.is_pub { self.push("pub "); }
+                self.push(&format!("app {} {{\n", app.name));
+                self.indent += 1;
+                // Minimal formatting — body details omitted
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
             Item::Mod(m) => self.format_mod(m),
         }
     }
@@ -664,7 +675,7 @@ impl Formatter {
                 self.push(&self.format_expr_to_string(value));
                 self.push(";\n");
             }
-            Stmt::Signal { name, ty, value } => {
+            Stmt::Signal { name, ty, value, .. } => {
                 self.push_indent();
                 self.push("signal ");
                 self.push(name);
@@ -850,7 +861,7 @@ impl Formatter {
 
             Expr::Await(inner) => format!("{}.await", self.format_expr_inner(inner, depth)),
 
-            Expr::Fetch { url, options } => {
+            Expr::Fetch { url, options, .. } => {
                 let url_str = self.format_expr_inner(url, depth);
                 if let Some(opts) = options {
                     format!("fetch({}, {})", url_str, self.format_expr_inner(opts, depth))
@@ -994,7 +1005,7 @@ impl Formatter {
                 s.push(';');
                 s
             }
-            Stmt::Signal { name, ty, value } => {
+            Stmt::Signal { name, ty, value, .. } => {
                 let mut s = "signal ".to_string();
                 s.push_str(name);
                 if let Some(t) = ty {
@@ -1345,6 +1356,8 @@ mod tests {
                     span: dummy_span(),
                 },
                 trait_bounds: vec![],
+                permissions: None,
+                gestures: vec![],
                 skeleton: None,
                 error_boundary: None,
                 span: dummy_span(),

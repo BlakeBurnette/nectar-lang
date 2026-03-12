@@ -485,7 +485,7 @@ fn walk_expr(expr: &Expr, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
             walk_expr(target, enums, errors);
             walk_expr(value, enums, errors);
         }
-        Expr::Fetch { url, options } => {
+        Expr::Fetch { url, options, .. } => {
             walk_expr(url, enums, errors);
             if let Some(opts) = options {
                 walk_expr(opts, enums, errors);
@@ -581,6 +581,8 @@ fn walk_item(item: &Item, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
             }
         }
         Item::Test(t) => walk_block(&t.body, enums, errors),
+            Item::Contract(_) => {}
+            Item::App(_) => {}
         Item::Struct(_) | Item::Enum(_) | Item::Use(_) | Item::Router(_)
         | Item::LazyComponent(_) | Item::Trait(_) | Item::Mod(_) => {}
     }

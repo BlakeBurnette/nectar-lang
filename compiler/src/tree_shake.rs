@@ -75,7 +75,7 @@ pub fn shake(program: &mut Program, entry_points: &[String], stats: &mut ShakeSt
 
     // Also keep Use items (imports) and Test items always.
     for (i, item) in program.items.iter().enumerate() {
-        if matches!(item, Item::Use(_) | Item::Test(_)) {
+        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_)) {
             // Always keep these
             reachable.insert(i);
         }
@@ -120,6 +120,8 @@ fn item_name(item: &Item) -> Option<String> {
         Item::LazyComponent(l) => Some(l.component.name.clone()),
         Item::Use(_) => None,
         Item::Test(_) => None,
+        Item::Contract(c) => Some(c.name.clone()),
+        Item::App(a) => Some(a.name.clone()),
         Item::Trait(t) => Some(t.name.clone()),
         Item::Mod(m) => Some(m.name.clone()),
     }
@@ -216,6 +218,14 @@ fn collect_item_deps(item: &Item, deps: &mut HashSet<String>) {
             collect_template_deps(&l.component.render.body, deps);
         }
         Item::Use(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
+            Item::Contract(_) => {}
+            Item::App(app) => {
+                if let Some(ref router) = app.router {
+                    for route in &router.routes {
+                        deps.insert(route.component.clone());
+                    }
+                }
+            }
     }
 }
 
@@ -338,7 +348,7 @@ fn collect_expr_deps(expr: &Expr, deps: &mut HashSet<String>) {
             collect_expr_deps(body, deps);
             collect_expr_deps(catch_body, deps);
         }
-        Expr::Fetch { url, options } => {
+        Expr::Fetch { url, options, .. } => {
             collect_expr_deps(url, deps);
             if let Some(opts) = options { collect_expr_deps(opts, deps); }
         }

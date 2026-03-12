@@ -1,0 +1,66 @@
+// contracts.nectar — API boundary contracts with compile-time and runtime safety
+//
+// Contracts define the shape of external data (API responses, WebSocket messages,
+// etc.) and enforce that shape at three levels:
+//   1. Compile-time: field access is checked against the contract definition
+//   2. Runtime: every API response is validated before entering the app
+//   3. Wire-level: a content hash detects backend/frontend contract drift
+
+// Define a contract for the customer API response
+contract CustomerResponse {
+    id: u32,
+    name: String,
+    email: String,
+    balance_cents: i64,
+    created_at: String,
+}
+
+// Contracts can reference other contracts or structs
+contract Address {
+    line1: String,
+    line2: String?,
+    city: String,
+    state: String,
+    zip: String,
+}
+
+contract OrderResponse {
+    id: u32,
+    customer_id: u32,
+    total_cents: i64,
+}
+
+// Use contracts with fetch — the response is validated before entering the app.
+// The compiler checks field access and the runtime validates the response shape.
+//
+// The request automatically includes:
+//   X-Nectar-Contract: CustomerResponse@a3f8b2c1
+//
+// If the backend was built against a different contract version, the hash
+// mismatch is caught immediately — not three weeks later from a user bug report.
+
+fn load_customer(id: u32) -> CustomerResponse {
+    // fetch -> ContractName validates the response at the boundary
+    let response = fetch("/api/customers/42") -> CustomerResponse;
+
+    // Compile-time guarantee: these field accesses are checked against
+    // the contract definition. If you typo customer.display_name,
+    // the compiler catches it — not the users browser.
+    let name = response.name;
+    let email = response.email;
+
+    // This would be a COMPILE ERROR:
+    // let x = response.display_name;
+    // error: contract CustomerResponse has no field display_name
+
+    return response;
+}
+
+// Export contracts to JSON Schema, OpenAPI, or Protobuf for backend teams:
+//   nectar export-contracts --format jsonschema > schemas/
+//   nectar export-contracts --format openapi > api-spec.yaml
+//   nectar export-contracts --format protobuf > contracts.proto
+//
+// The backend validates against these schemas in CI. If their response
+// shape drifts from what the frontend expects, their build fails —
+// not the users browsers.

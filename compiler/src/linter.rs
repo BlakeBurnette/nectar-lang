@@ -556,7 +556,7 @@ impl Linter {
                 self.lint_expr(body);
                 self.lint_expr(catch_body);
             }
-            Expr::Fetch { url, options } => {
+            Expr::Fetch { url, options, .. } => {
                 self.lint_expr(url);
                 if let Some(o) = options {
                     self.lint_expr(o);
@@ -691,7 +691,7 @@ impl Linter {
                 self.collect_calls_in_expr(body, calls);
                 self.collect_calls_in_expr(catch_body, calls);
             }
-            Expr::Fetch { url, options } => {
+            Expr::Fetch { url, options, .. } => {
                 self.collect_calls_in_expr(url, calls);
                 if let Some(o) = options {
                     self.collect_calls_in_expr(o, calls);
@@ -804,7 +804,7 @@ impl Linter {
                 self.collect_idents_in_expr(body, idents);
                 self.collect_idents_in_expr(catch_body, idents);
             }
-            Expr::Fetch { url, options } => {
+            Expr::Fetch { url, options, .. } => {
                 self.collect_idents_in_expr(url, idents);
                 if let Some(o) = options {
                     self.collect_idents_in_expr(o, idents);
@@ -939,6 +939,7 @@ mod tests {
                             name: "x".to_string(),
                             ty: None,
                             mutable: false,
+                            secret: false,
                             value: Expr::Integer(42),
                             ownership: Ownership::Owned,
                         },
@@ -1074,6 +1075,7 @@ mod tests {
                             name: "x".to_string(),
                             ty: None,
                             mutable: true,
+                            secret: false,
                             value: Expr::Integer(0),
                             ownership: Ownership::Owned,
                         },
