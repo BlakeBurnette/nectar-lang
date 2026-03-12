@@ -436,7 +436,7 @@ Contracts are Nectar's solution to the most common class of frontend bugs: **dat
 
 1. **Compile-time** — If you access a field that doesn't exist on the contract, the compiler catches it. Not the user's browser three weeks later.
 2. **Runtime boundary validation** — Every API response is validated in WASM before it enters your app. Malformed data never propagates. External data is **untrusted by default**, like Rust's `unsafe` boundary.
-3. **Wire-level staleness detection** — A content hash is embedded in every request. If the backend was built against a different contract version, the mismatch is caught on the first request.
+3. **Wire-level staleness detection** — A SHA-256 content hash (truncated to 8 hex chars) is embedded in every request. If the backend was built against a different contract version, the mismatch is caught on the first request.
 
 ```nectar
 // Define the shape of an API response
@@ -532,6 +532,7 @@ component PaymentForm() {
     permissions {
         network: ["https://api.stripe.com/*"],
         storage: ["session:auth_token"],
+        capabilities: ["camera", "geolocation"],
     }
 
     // OK: URL matches declared network permission
@@ -616,8 +617,16 @@ component ScheduleView() {
         navigate("/app/schedule/next-week");
     }
 
+    gesture swipe_right {
+        navigate("/app/schedule/prev-week");
+    }
+
     gesture swipe_down {
         self.refresh();
+    }
+
+    gesture pinch on:schedule_map {
+        self.toggle_zoom();
     }
 
     gesture long_press on:customer_card {
@@ -1060,6 +1069,8 @@ nectar build app.nectar --no-check         # Skip borrow checker and type checke
 | `--hydrate` | Emit a client hydration bundle |
 | `--no-check` | Skip borrow checking and type checking |
 | `-O`, `--optimize` | Optimization level: `0` (none), `1` (const fold + DCE), `2` (all passes) |
+| `--critical-css` | Extract and inline critical CSS for above-the-fold content |
+| `--sourcemap` | Generate source maps for debugging |
 
 ### `nectar test`
 
@@ -1351,6 +1362,11 @@ nectar-lang/
     api.nectar
     ai-chat.nectar
     seo.nectar
+    contracts.nectar
+    security.nectar
+    pwa-app.nectar
+    component-tests.nectar
+    agent-tests.nectar
 ```
 
 ### How to contribute

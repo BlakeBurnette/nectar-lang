@@ -27,6 +27,11 @@ app FieldService {
         fallback: OfflinePage,
     }
 
+    push {
+        vapid_key: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkOs-...",
+        on_message: handle_push,
+    }
+
     router AppRouter {
         route "/" => Home,
         route "/app" => Dashboard,
