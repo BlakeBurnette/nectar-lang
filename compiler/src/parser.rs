@@ -95,6 +95,12 @@ impl Parser {
                         | TokenKind::Page
                         | TokenKind::Form
                         | TokenKind::Channel
+                        | TokenKind::Embed
+                        | TokenKind::Pdf
+                        | TokenKind::Payment
+                        | TokenKind::Auth
+                        | TokenKind::Upload
+                        | TokenKind::Db
                         | TokenKind::Pub => break,
                         _ => { self.advance(); }
                     }
@@ -174,6 +180,12 @@ impl Parser {
             TokenKind::Page => Ok(Item::Page(self.parse_page(is_pub)?)),
             TokenKind::Form => Ok(Item::Form(self.parse_form(is_pub)?)),
             TokenKind::Channel => Ok(Item::Channel(self.parse_channel(is_pub)?)),
+            TokenKind::Embed => Ok(Item::Embed(self.parse_embed(is_pub)?)),
+            TokenKind::Pdf => Ok(Item::Pdf(self.parse_pdf(is_pub)?)),
+            TokenKind::Payment => Ok(Item::Payment(self.parse_payment(is_pub)?)),
+            TokenKind::Auth => Ok(Item::Auth(self.parse_auth(is_pub)?)),
+            TokenKind::Upload => Ok(Item::Upload(self.parse_upload(is_pub)?)),
+            TokenKind::Db => Ok(Item::Db(self.parse_db(is_pub)?)),
             TokenKind::MustUse => {
                 // must_use fn ...
                 self.advance();
@@ -185,7 +197,7 @@ impl Parser {
                 Ok(Item::LazyComponent(self.parse_lazy_component()?))
             }
             TokenKind::Test => Ok(Item::Test(self.parse_test_def()?)),
-            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, form, channel, lazy, test)")),
+            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, form, channel, embed, pdf, payment, auth, upload, lazy, test)")),
         }
     }
 
@@ -2135,6 +2147,31 @@ impl Parser {
                 self.expect(&TokenKind::RightParen)?;
                 Ok(Expr::AssertEq { left: Box::new(left), right: Box::new(right), message })
             }
+            TokenKind::Env => {
+                self.advance();
+                let span = self.current_span();
+                self.expect(&TokenKind::LeftParen)?;
+                let name = self.parse_expr()?;
+                self.expect(&TokenKind::RightParen)?;
+                Ok(Expr::Env { name: Box::new(name), span })
+            }
+            TokenKind::Trace => {
+                self.advance();
+                let span = self.current_span();
+                self.expect(&TokenKind::LeftParen)?;
+                let label = self.parse_expr()?;
+                self.expect(&TokenKind::RightParen)?;
+                let body = self.parse_block()?;
+                Ok(Expr::Trace { label: Box::new(label), body, span })
+            }
+            TokenKind::Flag => {
+                self.advance();
+                let span = self.current_span();
+                self.expect(&TokenKind::LeftParen)?;
+                let name = self.parse_expr()?;
+                self.expect(&TokenKind::RightParen)?;
+                Ok(Expr::Flag { name: Box::new(name), span })
+            }
             TokenKind::Fetch => {
                 self.advance();
                 self.expect(&TokenKind::LeftParen)?;
@@ -2159,6 +2196,16 @@ impl Parser {
                 let path = self.parse_expr()?;
                 self.expect(&TokenKind::RightParen)?;
                 Ok(Expr::Navigate { path: Box::new(path) })
+            }
+            TokenKind::Download => {
+                let span = self.current_span();
+                self.advance();
+                self.expect(&TokenKind::LeftParen)?;
+                let data = self.parse_expr()?;
+                self.expect(&TokenKind::Comma)?;
+                let filename = self.parse_expr()?;
+                self.expect(&TokenKind::RightParen)?;
+                Ok(Expr::Download { data: Box::new(data), filename: Box::new(filename), span })
             }
             TokenKind::Spawn => {
                 self.advance();
@@ -2958,6 +3005,395 @@ impl Parser {
         self.expect(&TokenKind::RightBrace)?;
 
         Ok(ChannelDef { name, url, contract, on_message, on_connect, on_disconnect, reconnect, heartbeat_interval, methods, is_pub, span })
+    }
+
+    // === Embed parsing ===
+
+    fn parse_embed(&mut self, is_pub: bool) -> Result<EmbedDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Embed)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut src = Expr::StringLit("".to_string());
+        let mut loading = None;
+        let mut sandbox = false;
+        let mut integrity = None;
+        let mut permissions = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "src" => { src = self.parse_expr()?; }
+                "loading" => {
+                    if let TokenKind::StringLit(s) = self.peek_kind() {
+                        loading = Some(s);
+                        self.advance();
+                    }
+                }
+                "sandbox" => {
+                    if let TokenKind::Ident(ref v) = self.peek_kind() {
+                        sandbox = v == "true";
+                        self.advance();
+                    } else if let TokenKind::True = self.peek_kind() {
+                        sandbox = true;
+                        self.advance();
+                    } else if let TokenKind::False = self.peek_kind() {
+                        sandbox = false;
+                        self.advance();
+                    }
+                }
+                "integrity" => { integrity = Some(self.parse_expr()?); }
+                "permissions" => {
+                    permissions = Some(self.parse_permissions()?);
+                }
+                _ => {
+                    self.errors.push(ParseError {
+                        message: format!("unknown embed property: {}", key),
+                        span,
+                    });
+                    self.advance();
+                }
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        Ok(EmbedDef { name, src, loading, sandbox, integrity, permissions, is_pub, span })
+    }
+
+    // === PDF parsing ===
+
+    fn parse_pdf(&mut self, is_pub: bool) -> Result<PdfDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Pdf)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut page_size = None;
+        let mut orientation = None;
+        let mut margins = None;
+        let mut render = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Render => {
+                    render = Some(self.parse_render_block()?);
+                }
+                _ => {
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    match key.as_str() {
+                        "page_size" => {
+                            if let TokenKind::StringLit(s) = self.peek_kind() {
+                                page_size = Some(s);
+                                self.advance();
+                            }
+                        }
+                        "orientation" => {
+                            if let TokenKind::StringLit(s) = self.peek_kind() {
+                                orientation = Some(s);
+                                self.advance();
+                            }
+                        }
+                        "margins" => { margins = Some(self.parse_expr()?); }
+                        _ => {
+                            self.errors.push(ParseError {
+                                message: format!("unknown pdf property: {}", key),
+                                span,
+                            });
+                            self.advance();
+                        }
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        // If no render block was found, create a default empty one
+        let render = render.unwrap_or(RenderBlock {
+            body: TemplateNode::Fragment(vec![]),
+            span,
+        });
+
+        Ok(PdfDef { name, render, page_size, orientation, margins, is_pub, span })
+    }
+
+    fn parse_payment(&mut self, is_pub: bool) -> Result<PaymentDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Payment)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut provider = None;
+        let mut public_key = None;
+        let mut sandbox_mode = true; // default to sandboxed
+        let mut on_success = None;
+        let mut on_error = None;
+        let mut methods = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Fn | TokenKind::Async => {
+                    let f = self.parse_function(false)?;
+                    match f.name.as_str() {
+                        "on_success" => on_success = Some(f),
+                        "on_error" => on_error = Some(f),
+                        _ => methods.push(f),
+                    }
+                }
+                _ => {
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    match key.as_str() {
+                        "provider" => { provider = Some(self.parse_expr()?); }
+                        "public_key" => { public_key = Some(self.parse_expr()?); }
+                        "sandbox" => {
+                            if let TokenKind::Ident(v) = self.peek_kind() {
+                                sandbox_mode = v == "true";
+                                self.advance();
+                            }
+                        }
+                        _ => { self.parse_expr()?; } // skip unknown
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(PaymentDef { name, provider, public_key, sandbox_mode, on_success, on_error, methods, is_pub, span })
+    }
+
+    fn parse_auth(&mut self, is_pub: bool) -> Result<AuthDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Auth)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut provider = None;
+        let mut providers = vec![];
+        let mut on_login = None;
+        let mut on_logout = None;
+        let mut on_error = None;
+        let mut session_storage = None;
+        let mut methods = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Fn | TokenKind::Async => {
+                    let f = self.parse_function(false)?;
+                    match f.name.as_str() {
+                        "on_login" => on_login = Some(f),
+                        "on_logout" => on_logout = Some(f),
+                        "on_error" => on_error = Some(f),
+                        _ => methods.push(f),
+                    }
+                }
+                _ => {
+                    let key = self.expect_ident()?;
+                    match key.as_str() {
+                        "provider" => {
+                            // provider "google" { client_id: ..., scopes: [...] }
+                            if let TokenKind::StringLit(_) = self.peek_kind() {
+                                let prov_name = if let TokenKind::StringLit(s) = self.advance().kind { s } else { unreachable!() };
+                                let prov_span = self.current_span();
+                                self.expect(&TokenKind::LeftBrace)?;
+                                let mut client_id = None;
+                                let mut scopes = vec![];
+                                while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                                    let pkey = self.expect_ident()?;
+                                    self.expect(&TokenKind::Colon)?;
+                                    match pkey.as_str() {
+                                        "client_id" => { client_id = Some(self.parse_expr()?); }
+                                        "scopes" => {
+                                            self.expect(&TokenKind::LeftBracket)?;
+                                            while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+                                                if let TokenKind::StringLit(s) = self.peek_kind() {
+                                                    scopes.push(s);
+                                                    self.advance();
+                                                } else {
+                                                    self.advance();
+                                                }
+                                                self.match_token(&TokenKind::Comma);
+                                            }
+                                            self.expect(&TokenKind::RightBracket)?;
+                                        }
+                                        _ => { self.parse_expr()?; }
+                                    }
+                                    self.match_token(&TokenKind::Comma);
+                                }
+                                self.expect(&TokenKind::RightBrace)?;
+                                providers.push(AuthProvider { name: prov_name, client_id, scopes, span: prov_span });
+                            } else {
+                                self.expect(&TokenKind::Colon)?;
+                                provider = Some(self.parse_expr()?);
+                            }
+                        }
+                        "session" => {
+                            self.expect(&TokenKind::Colon)?;
+                            if let TokenKind::StringLit(s) = self.peek_kind() {
+                                session_storage = Some(s);
+                                self.advance();
+                            }
+                        }
+                        _ => {
+                            self.expect(&TokenKind::Colon)?;
+                            self.parse_expr()?; // skip unknown
+                        }
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(AuthDef { name, provider, providers, on_login, on_logout, on_error, session_storage, methods, is_pub, span })
+    }
+
+    fn parse_upload(&mut self, is_pub: bool) -> Result<UploadDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Upload)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut endpoint = Expr::StringLit("/upload".to_string());
+        let mut max_size = None;
+        let mut accept = vec![];
+        let mut chunked = false;
+        let mut on_progress = None;
+        let mut on_complete = None;
+        let mut on_error = None;
+        let mut methods = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Fn | TokenKind::Async => {
+                    let f = self.parse_function(false)?;
+                    match f.name.as_str() {
+                        "on_progress" => on_progress = Some(f),
+                        "on_complete" => on_complete = Some(f),
+                        "on_error" => on_error = Some(f),
+                        _ => methods.push(f),
+                    }
+                }
+                _ => {
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    match key.as_str() {
+                        "endpoint" => { endpoint = self.parse_expr()?; }
+                        "max_size" => { max_size = Some(self.parse_expr()?); }
+                        "accept" => {
+                            self.expect(&TokenKind::LeftBracket)?;
+                            while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+                                if let TokenKind::StringLit(s) = self.peek_kind() {
+                                    accept.push(s);
+                                    self.advance();
+                                } else {
+                                    self.advance();
+                                }
+                                self.match_token(&TokenKind::Comma);
+                            }
+                            self.expect(&TokenKind::RightBracket)?;
+                        }
+                        "chunked" => {
+                            if let TokenKind::Ident(v) = self.peek_kind() {
+                                chunked = v == "true";
+                                self.advance();
+                            }
+                        }
+                        _ => { self.parse_expr()?; } // skip unknown
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(UploadDef { name, endpoint, max_size, accept, chunked, on_progress, on_complete, on_error, methods, is_pub, span })
+    }
+
+    fn parse_db(&mut self, is_pub: bool) -> Result<DbDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Db)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut version = None;
+        let mut stores = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            match key.as_str() {
+                "version" => {
+                    self.expect(&TokenKind::Colon)?;
+                    if let TokenKind::Integer(v) = self.peek_kind() {
+                        version = Some(v as u32);
+                        self.advance();
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+                "store" => {
+                    let store_span = self.current_span();
+                    let store_name = if let TokenKind::StringLit(s) = self.peek_kind() {
+                        self.advance();
+                        s
+                    } else {
+                        self.expect_ident()?
+                    };
+                    self.expect(&TokenKind::LeftBrace)?;
+                    let mut store_key = "id".to_string();
+                    let mut indexes = vec![];
+                    while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                        let field = self.expect_ident()?;
+                        match field.as_str() {
+                            "key" => {
+                                self.expect(&TokenKind::Colon)?;
+                                if let TokenKind::StringLit(s) = self.peek_kind() {
+                                    store_key = s;
+                                    self.advance();
+                                }
+                                self.match_token(&TokenKind::Comma);
+                            }
+                            "index" => {
+                                let idx_name = if let TokenKind::StringLit(s) = self.peek_kind() {
+                                    self.advance();
+                                    s
+                                } else {
+                                    self.expect_ident()?
+                                };
+                                self.expect(&TokenKind::FatArrow)?;
+                                let idx_path = if let TokenKind::StringLit(s) = self.peek_kind() {
+                                    self.advance();
+                                    s
+                                } else {
+                                    self.expect_ident()?
+                                };
+                                indexes.push((idx_name, idx_path));
+                                self.match_token(&TokenKind::Comma);
+                            }
+                            _ => {
+                                // skip unknown field
+                                self.expect(&TokenKind::Colon)?;
+                                self.parse_expr()?;
+                                self.match_token(&TokenKind::Comma);
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RightBrace)?;
+                    stores.push(DbStoreDef { name: store_name, key: store_key, indexes, span: store_span });
+                }
+                _ => {
+                    // skip unknown
+                    self.expect(&TokenKind::Colon)?;
+                    self.parse_expr()?;
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(DbDef { name, version, stores, is_pub, span })
     }
 
     // === Helpers ===

@@ -34,6 +34,16 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | Bundle size | N/A | 100KB+ min (React+deps) | WASM binary, code splitting via `chunk` keyword |
 | State races | Possible | Possible | Compiler-detected, `atomic` signals for safe shared state |
 | Supply chain | npm (1000s of deps) | npm (1000s of deps) | Zero JS dependencies â€” flat WASM binary |
+| Third-party scripts | Raw `<script>` tags | Raw `<script>` tags | Sandboxed `embed` with loading control and SRI |
+| Time/timezone | `Date` (broken) + libraries | N/A | First-class `Instant`, `ZonedDateTime`, `Duration` types |
+| PDF generation | jsPDF / Puppeteer | Library | `pdf` keyword renders components to PDF |
+| Payments | Stripe SDK (3rd party JS) | Library | `payment` keyword with PCI-compliant sandbox |
+| Authentication | NextAuth / Auth0 / Passport | Library | `auth` keyword with built-in OAuth/session |
+| File uploads | Manual XHR/fetch | Manual | `upload` keyword with progress, chunked, validation |
+| Local database | IndexedDB (terrible API) | N/A | `db` keyword with declarative schema |
+| Observability | Sentry / Datadog (3rd party) | Manual | `trace` blocks with built-in performance metrics |
+| Feature flags | LaunchDarkly / manual | Manual | `flag()` with compile-time DCE |
+| Environment vars | dotenv / NEXT_PUBLIC_ | getenv() | `env()` with compile-time validation |
 
 Nectar was designed from the ground up with these principles:
 
@@ -918,6 +928,144 @@ warning[resource_leak]: component uses addEventListener but has no on_destroy â€
 
 The compiler tracks event listeners, intervals, timeouts, and subscriptions, warning when cleanup handlers are missing.
 
+### Third-Party Embeds
+
+Third-party scripts are the biggest security and performance hole in modern web apps. Nectar's `embed` keyword sandboxes external scripts with controlled loading strategies and subresource integrity verification.
+
+```nectar
+embed ChatWidget {
+    src: "https://widget.intercom.io/widget/app123",
+    loading: "idle",       // defer | async | lazy | idle
+    sandbox: true,         // runs in iframe, can't touch your DOM
+    integrity: "sha384-...",
+}
+```
+
+Loading strategies: `defer` (after DOM), `async` (non-blocking), `lazy` (on viewport), `idle` (requestIdleCallback). All embeds are auditable with `nectar audit`. See [`examples/embeds.nectar`](examples/embeds.nectar).
+
+### Time & Timezones
+
+JavaScript's `Date` is broken. Nectar has proper time types built into the language -- no moment.js, no date-fns, no Temporal polyfill.
+
+```nectar
+let meeting: ZonedDateTime = time.zoned("2026-03-15T14:00", "America/New_York");
+let tokyo: ZonedDateTime = meeting.in_timezone("Asia/Tokyo");
+let next_week: ZonedDateTime = meeting.add(Duration.days(7));  // DST-safe
+let formatted: String = meeting.format("MMMM d, yyyy h:mm a z");
+```
+
+**Types:** `Instant` (UTC point in time), `ZonedDateTime` (instant + timezone), `Duration` (length of time), `Date` (calendar date), `Time` (wall clock). All timezone conversions are explicit. DST transitions are handled correctly. See [`examples/time.nectar`](examples/time.nectar).
+
+### PDF & Downloads
+
+Generate PDFs from render blocks and trigger browser downloads. No jsPDF, no Puppeteer, no headless browser.
+
+```nectar
+pdf InvoicePdf {
+    page_size: "A4",
+    orientation: "portrait",
+    render { <div class="invoice"><h1>"Invoice #1234"</h1></div> }
+}
+
+// Trigger download from any component
+download(InvoicePdf, "invoice-1234.pdf");
+```
+
+The `pdf` keyword defines a renderable document. The `download()` builtin triggers the browser's file save dialog. See [`examples/pdf.nectar`](examples/pdf.nectar).
+
+### Payments
+
+Nectar makes payment integration PCI-compliant by default. Payment forms run in sandboxed iframes -- card numbers never touch your component state.
+
+```nectar
+payment Checkout {
+    provider: "stripe",
+    public_key: env("STRIPE_PUBLIC_KEY"),
+    sandbox: true,
+    fn on_success(result: String) { /* redirect */ }
+    fn on_error(error: String) { /* show error */ }
+}
+```
+
+The compiler guarantees payment data isolation. No Stripe SDK to bundle, no PCI compliance checklist to follow manually. See [`examples/payments.nectar`](examples/payments.nectar).
+
+### Authentication
+
+Authentication is a language construct. OAuth providers, session management, and login/logout flows are declarative.
+
+```nectar
+auth AppAuth {
+    session: "cookie",
+    provider "google" { client_id: env("GOOGLE_CLIENT_ID"), scopes: ["profile", "email"] }
+    provider "github" { client_id: env("GITHUB_CLIENT_ID"), scopes: ["user:email"] }
+    fn on_login(user: String) { /* redirect to dashboard */ }
+}
+```
+
+No NextAuth. No Auth0 SDK. No Passport.js. See [`examples/auth.nectar`](examples/auth.nectar).
+
+### File Uploads
+
+File uploads are a language construct with built-in progress tracking, validation, and chunked/resumable support.
+
+```nectar
+upload AvatarUpload {
+    endpoint: "/api/upload/avatar",
+    max_size: 5242880,
+    accept: ["image/png", "image/jpeg", "image/webp"],
+    chunked: false,
+    fn on_progress(percent: i32) { /* update progress bar */ }
+    fn on_complete(response: String) { /* update UI */ }
+}
+```
+
+Max size and MIME type are validated before the upload starts. Chunked uploads resume automatically after network interruption. See [`examples/uploads.nectar`](examples/uploads.nectar).
+
+### Local Database
+
+Nectar wraps IndexedDB with a declarative schema. No raw transactions, no callback hell, no onsuccess/onerror.
+
+```nectar
+db AppDatabase {
+    version: 1,
+    store "users" {
+        key: "id",
+        index "email" => "email",
+    }
+}
+
+let data = AppDatabase.query("users");
+```
+
+Stores and indexes are declared once. Queries are type-safe via contracts. Schema migrations are version-tracked. See [`examples/database.nectar`](examples/database.nectar).
+
+### Observability
+
+Built-in tracing, feature flags, and error tracking -- no Sentry SDK, no Datadog agent, no LaunchDarkly.
+
+```nectar
+let result = trace("dashboard.load") {
+    let users = fetch("/api/users");
+    "loaded"
+};
+
+// Feature flags with compile-time dead code elimination
+if flag("new_dashboard") { /* new UI */ } else { /* old UI */ }
+```
+
+`trace` blocks measure execution time automatically and report to the configured backend. `flag()` checks are eliminated at compile time when flags are resolved, producing zero runtime overhead. See [`examples/observability.nectar`](examples/observability.nectar).
+
+### Environment Variables
+
+The `env()` builtin reads environment variables with **compile-time validation**. If a required variable is missing at build time, the compiler errors -- not the user's browser at runtime.
+
+```nectar
+let api_key = env("STRIPE_PUBLIC_KEY");     // validated at compile time
+let optional = env("DEBUG_MODE", "false");  // default value
+```
+
+No dotenv. No `NEXT_PUBLIC_` prefix conventions. No `process.env` that silently returns `undefined`.
+
 ### String Interpolation
 
 ```nectar
@@ -1290,6 +1438,8 @@ nectar dev --build-dir ./dist
 | `--src` | Source directory to watch (default: `.`) |
 | `--port`, `-p` | Port to serve on (default: `3000`) |
 | `--build-dir` | Build output directory (default: `./build`) |
+| `--flags` | Enable feature flags for dev builds (e.g. `--flags new_dashboard,beta_ui`) |
+| `--tunnel` | Expose dev server via public tunnel URL for mobile testing |
 
 ### `nectar init` / `nectar add` / `nectar install`
 
@@ -1345,6 +1495,20 @@ nectar export-contracts app.nectar --format protobuf     # Protocol Buffers .pro
 |---|---|
 | `--format` | Output format: `jsonschema` (default), `openapi`, `protobuf` |
 | `--output`, `-o` | Output directory (default: stdout) |
+
+### `nectar audit`
+
+Audit third-party embeds for security issues, outdated integrity hashes, and loading performance.
+
+```bash
+nectar audit app.nectar                      # Audit all embeds in a file
+nectar audit --project .                     # Audit all embeds in the project
+```
+
+| Flag | Description |
+|---|---|
+| `--project` | Scan all `.nectar` files in the given directory |
+| `--strict` | Fail on any embed without an `integrity` hash |
 
 ### `--lsp`
 
@@ -1473,6 +1637,14 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`realtime.nectar`](examples/realtime.nectar) | Real-time -- `channel` keyword, WebSocket, typed messages |
 | [`concurrency.nectar`](examples/concurrency.nectar) | Concurrency -- `spawn`, `parallel`, off-main-thread computation |
 | [`error-handling.nectar`](examples/error-handling.nectar) | Error handling -- `must_use`, exhaustive Result/Option matching |
+| [`embeds.nectar`](examples/embeds.nectar) | Third-party embeds -- `embed` keyword, sandbox isolation, loading strategies, SRI |
+| [`time.nectar`](examples/time.nectar) | Time & timezones -- `Instant`, `ZonedDateTime`, `Duration`, DST-safe arithmetic |
+| [`pdf.nectar`](examples/pdf.nectar) | PDF generation -- `pdf` keyword, `download()` builtin, render-to-PDF |
+| [`payments.nectar`](examples/payments.nectar) | Payments -- `payment` keyword, PCI-compliant sandbox, Stripe integration |
+| [`auth.nectar`](examples/auth.nectar) | Authentication -- `auth` keyword, OAuth providers, session management |
+| [`uploads.nectar`](examples/uploads.nectar) | File uploads -- `upload` keyword, progress tracking, chunked/resumable |
+| [`database.nectar`](examples/database.nectar) | Local database -- `db` keyword, IndexedDB abstraction, declarative schema |
+| [`observability.nectar`](examples/observability.nectar) | Observability -- `trace` blocks, `flag()` feature flags, performance metrics |
 
 Compile any example:
 
@@ -1537,6 +1709,14 @@ nectar-lang/
     error-handling.nectar
     component-tests.nectar
     agent-tests.nectar
+    embeds.nectar
+    time.nectar
+    pdf.nectar
+    payments.nectar
+    auth.nectar
+    uploads.nectar
+    database.nectar
+    observability.nectar
 ```
 
 ### How to contribute

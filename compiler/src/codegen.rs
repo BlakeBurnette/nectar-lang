@@ -104,6 +104,29 @@ impl WasmCodegen {
         self.line("(import \"channel\" \"close\" (func $channel_close (param i32 i32)))");
         self.line("(import \"channel\" \"setReconnect\" (func $channel_set_reconnect (param i32 i32 i32)))");
 
+        // Import payment runtime
+        self.line("");
+        self.line(";; Payment runtime imports");
+        self.line("(import \"payment\" \"initProvider\" (func $payment_init (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"payment\" \"createCheckout\" (func $payment_create_checkout (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"payment\" \"processPayment\" (func $payment_process (param i32 i32) (result i32)))");
+
+        // Import auth runtime
+        self.line("");
+        self.line(";; Auth runtime imports");
+        self.line("(import \"auth\" \"initAuth\" (func $auth_init (param i32 i32 i32 i32)))");
+        self.line("(import \"auth\" \"login\" (func $auth_login (param i32 i32) (result i32)))");
+        self.line("(import \"auth\" \"logout\" (func $auth_logout (param i32 i32)))");
+        self.line("(import \"auth\" \"getUser\" (func $auth_get_user (result i32)))");
+        self.line("(import \"auth\" \"isAuthenticated\" (func $auth_is_authenticated (result i32)))");
+
+        // Import upload runtime
+        self.line("");
+        self.line(";; Upload runtime imports");
+        self.line("(import \"upload\" \"init\" (func $upload_init (param i32 i32 i32 i32)))");
+        self.line("(import \"upload\" \"start\" (func $upload_start (param i32 i32) (result i32)))");
+        self.line("(import \"upload\" \"cancel\" (func $upload_cancel (param i32 i32)))");
+
         // Import AI runtime — LLM interaction primitives
         self.line("");
         self.line(";; AI runtime imports");
@@ -281,6 +304,53 @@ impl WasmCodegen {
         self.line(";; Lifecycle runtime imports");
         self.line("(import \"lifecycle\" \"registerCleanup\" (func $lifecycle_register_cleanup (param i32 i32)))");
 
+        // Embed runtime imports — third-party script/widget integration
+        self.line("");
+        self.line(";; Embed runtime imports");
+        self.line("(import \"embed\" \"loadScript\" (func $embed_load_script (param i32 i32 i32 i32 i32)))");
+        self.line("(import \"embed\" \"loadSandboxed\" (func $embed_load_sandboxed (param i32 i32 i32 i32)))");
+
+        // Time runtime imports — temporal types
+        self.line("");
+        self.line(";; Time runtime imports");
+        self.line("(import \"time\" \"now\" (func $time_now (result i64)))");
+        self.line("(import \"time\" \"format\" (func $time_format (param i64 i32 i32) (result i32)))");
+        self.line("(import \"time\" \"toZone\" (func $time_to_zone (param i64 i32 i32) (result i64)))");
+        self.line("(import \"time\" \"addDuration\" (func $time_add_duration (param i64 i64) (result i64)))");
+
+        // PDF generation runtime imports
+        self.line("");
+        self.line(";; PDF runtime imports");
+        self.line("(import \"pdf\" \"create\" (func $pdf_create (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"pdf\" \"render\" (func $pdf_render (param i32 i32 i32) (result i32)))");
+
+        // IO/Download runtime imports
+        self.line("");
+        self.line(";; IO runtime imports");
+        self.line("(import \"io\" \"download\" (func $io_download (param i32 i32 i32 i32)))");
+
+        self.line("");
+        self.line(";; Environment variable imports");
+        self.line("(import \"env\" \"get\" (func $env_get (param i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Database (IndexedDB) imports");
+        self.line("(import \"db\" \"open\" (func $db_open (param i32 i32 i32) (result i32)))");
+        self.line("(import \"db\" \"put\" (func $db_put (param i32 i32 i32 i32 i32 i32)))");
+        self.line("(import \"db\" \"get\" (func $db_get (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"db\" \"delete\" (func $db_delete (param i32 i32 i32 i32)))");
+        self.line("(import \"db\" \"query\" (func $db_query (param i32 i32 i32 i32) (result i32)))");
+
+        self.line("");
+        self.line(";; Tracing / observability imports");
+        self.line("(import \"trace\" \"start\" (func $trace_start (param i32 i32) (result i32)))");
+        self.line("(import \"trace\" \"end\" (func $trace_end (param i32)))");
+        self.line("(import \"trace\" \"error\" (func $trace_error (param i32 i32 i32)))");
+
+        self.line("");
+        self.line(";; Feature flag imports");
+        self.line("(import \"flags\" \"isEnabled\" (func $flag_is_enabled (param i32 i32) (result i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
@@ -371,6 +441,11 @@ impl WasmCodegen {
             Item::Page(page) => self.generate_page(page),
             Item::Form(form) => self.generate_form(form),
             Item::Channel(ch) => self.generate_channel(ch),
+            Item::Payment(payment) => self.generate_payment(payment),
+            Item::Auth(auth) => self.generate_auth(auth),
+            Item::Upload(upload) => self.generate_upload(upload),
+            Item::Embed(embed) => self.generate_embed(embed),
+            Item::Pdf(pdf) => self.generate_pdf(pdf),
             _ => {
                 self.line(&format!(";; TODO: codegen for {:?}", std::mem::discriminant(item)));
             }
@@ -1034,6 +1109,224 @@ impl WasmCodegen {
             self.generate_function(handler);
         }
         for method in &ch.methods {
+            self.generate_function(method);
+        }
+    }
+
+    fn generate_embed(&mut self, embed: &EmbedDef) {
+        self.line(&format!(";; === Embed: {} ===", embed.name));
+
+        let name_offset = self.store_string(&embed.name);
+        let name_len = embed.name.len();
+
+        // Extract source URL
+        let src_str = match &embed.src {
+            Expr::StringLit(s) => s.clone(),
+            _ => "".to_string(),
+        };
+        let src_offset = self.store_string(&src_str);
+        let src_len = src_str.len();
+
+        // Loading strategy
+        let loading_str = embed.loading.as_deref().unwrap_or("async");
+        let loading_offset = self.store_string(loading_str);
+        let loading_len = loading_str.len();
+
+        // Integrity hash (SRI)
+        let integrity_str = match &embed.integrity {
+            Some(Expr::StringLit(s)) => s.clone(),
+            _ => "".to_string(),
+        };
+        let integrity_offset = self.store_string(&integrity_str);
+        let _integrity_len = integrity_str.len();
+
+        // Generate embed registration function
+        self.emit(&format!("(func $__embed_register_{} (export \"__embed_register_{}\")", embed.name, embed.name));
+        self.indent += 1;
+
+        if embed.sandbox {
+            // Sandboxed embed — use iframe
+            self.line(&format!("i32.const {}  ;; name ptr", name_offset));
+            self.line(&format!("i32.const {}  ;; name len", name_len));
+            self.line(&format!("i32.const {}  ;; src ptr", src_offset));
+            self.line(&format!("i32.const {}  ;; src len", src_len));
+            self.line("call $embed_load_sandboxed");
+        } else {
+            // Script embed — direct script tag
+            self.line(&format!("i32.const {}  ;; src ptr", src_offset));
+            self.line(&format!("i32.const {}  ;; src len", src_len));
+            self.line(&format!("i32.const {}  ;; loading ptr", loading_offset));
+            self.line(&format!("i32.const {}  ;; loading len", loading_len));
+            self.line(&format!("i32.const {}  ;; integrity offset (0 = none)", integrity_offset));
+            self.line("call $embed_load_script");
+        }
+
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    fn generate_pdf(&mut self, pdf: &PdfDef) {
+        self.line(&format!(";; === PDF: {} ===", pdf.name));
+
+        let name_offset = self.store_string(&pdf.name);
+        let name_len = pdf.name.len();
+
+        // Build config JSON
+        let page_size = pdf.page_size.as_deref().unwrap_or("A4");
+        let orientation = pdf.orientation.as_deref().unwrap_or("portrait");
+        let config_json = format!("{{\"pageSize\":\"{}\",\"orientation\":\"{}\"}}", page_size, orientation);
+        let config_offset = self.store_string(&config_json);
+        let config_len = config_json.len();
+
+        // Generate PDF creation function
+        self.emit(&format!("(func $__pdf_create_{} (export \"__pdf_create_{}\") (result i32)", pdf.name, pdf.name));
+        self.indent += 1;
+
+        self.line(&format!("i32.const {}  ;; name ptr", name_offset));
+        self.line(&format!("i32.const {}  ;; name len", name_len));
+        self.line(&format!("i32.const {}  ;; config ptr", config_offset));
+        self.line(&format!("i32.const {}  ;; config len", config_len));
+        self.line("call $pdf_create");
+
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    fn generate_payment(&mut self, payment: &PaymentDef) {
+        self.line(&format!(";; === Payment: {} ===", payment.name));
+
+        let name_offset = self.store_string(&payment.name);
+        let name_len = payment.name.len();
+
+        let provider_str = match &payment.provider {
+            Some(Expr::StringLit(s)) => s.clone(),
+            _ => "stripe".to_string(),
+        };
+        let provider_offset = self.store_string(&provider_str);
+        let provider_len = provider_str.len();
+
+        let sandboxed = if payment.sandbox_mode { 1 } else { 0 };
+
+        self.line(&format!("(func $__payment_register_{} (export \"__payment_register_{}\")", payment.name, payment.name));
+        self.line(&format!("  i32.const {}  ;; name ptr", name_offset));
+        self.line(&format!("  i32.const {}  ;; name len", name_len));
+        self.line(&format!("  i32.const {}  ;; provider ptr", provider_offset));
+        self.line(&format!("  i32.const {}  ;; provider len", provider_len));
+        self.line(&format!("  i32.const {}  ;; sandboxed", sandboxed));
+        self.line("  call $payment_init");
+        self.line(")");
+
+        if let Some(ref handler) = payment.on_success {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = payment.on_error {
+            self.generate_function(handler);
+        }
+        for method in &payment.methods {
+            self.generate_function(method);
+        }
+    }
+
+    fn generate_auth(&mut self, auth: &AuthDef) {
+        self.line(&format!(";; === Auth: {} ===", auth.name));
+
+        let name_offset = self.store_string(&auth.name);
+        let name_len = auth.name.len();
+
+        // Build JSON config for providers
+        let mut config = String::from("{\"providers\":{");
+        for (i, prov) in auth.providers.iter().enumerate() {
+            if i > 0 { config.push(','); }
+            config.push('"');
+            config.push_str(&prov.name);
+            config.push_str("\":{\"scopes\":[");
+            for (j, scope) in prov.scopes.iter().enumerate() {
+                if j > 0 { config.push(','); }
+                config.push('"');
+                config.push_str(scope);
+                config.push('"');
+            }
+            config.push_str("]}");
+        }
+        config.push_str("}");
+        if let Some(ref storage) = auth.session_storage {
+            config.push_str(&format!(",\"session\":\"{}\"", storage));
+        }
+        config.push('}');
+
+        let config_offset = self.store_string(&config);
+        let config_len = config.len();
+
+        self.line(&format!("(func $__auth_register_{} (export \"__auth_register_{}\")", auth.name, auth.name));
+        self.line(&format!("  i32.const {}  ;; name ptr", name_offset));
+        self.line(&format!("  i32.const {}  ;; name len", name_len));
+        self.line(&format!("  i32.const {}  ;; config ptr", config_offset));
+        self.line(&format!("  i32.const {}  ;; config len", config_len));
+        self.line("  call $auth_init");
+        self.line(")");
+
+        if let Some(ref handler) = auth.on_login {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = auth.on_logout {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = auth.on_error {
+            self.generate_function(handler);
+        }
+        for method in &auth.methods {
+            self.generate_function(method);
+        }
+    }
+
+    fn generate_upload(&mut self, upload: &UploadDef) {
+        self.line(&format!(";; === Upload: {} ===", upload.name));
+
+        let name_offset = self.store_string(&upload.name);
+        let name_len = upload.name.len();
+
+        let endpoint_str = match &upload.endpoint {
+            Expr::StringLit(s) => s.clone(),
+            _ => "/upload".to_string(),
+        };
+
+        let mut config = format!("{{\"endpoint\":\"{}\"", endpoint_str);
+        if !upload.accept.is_empty() {
+            config.push_str(",\"accept\":[");
+            for (i, mime) in upload.accept.iter().enumerate() {
+                if i > 0 { config.push(','); }
+                config.push('"');
+                config.push_str(mime);
+                config.push('"');
+            }
+            config.push(']');
+        }
+        if upload.chunked {
+            config.push_str(",\"chunked\":true");
+        }
+        config.push('}');
+
+        let config_offset = self.store_string(&config);
+        let config_len = config.len();
+
+        self.line(&format!("(func $__upload_register_{} (export \"__upload_register_{}\")", upload.name, upload.name));
+        self.line(&format!("  i32.const {}  ;; name ptr", name_offset));
+        self.line(&format!("  i32.const {}  ;; name len", name_len));
+        self.line(&format!("  i32.const {}  ;; config ptr", config_offset));
+        self.line(&format!("  i32.const {}  ;; config len", config_len));
+        self.line("  call $upload_init");
+        self.line(")");
+
+        if let Some(ref handler) = upload.on_progress {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = upload.on_complete {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = upload.on_error {
+            self.generate_function(handler);
+        }
+        for method in &upload.methods {
             self.generate_function(method);
         }
     }
@@ -2338,6 +2631,33 @@ impl WasmCodegen {
                 self.line(";; dynamic import — triggers code split and async chunk loading");
                 self.generate_expr(path);
                 self.line("call $load_chunk");
+            }
+            Expr::Download { data, filename, .. } => {
+                self.line(";; download — trigger file download");
+                self.generate_expr(data);
+                self.generate_expr(filename);
+                self.line("call $io_download");
+            }
+            Expr::Env { name, .. } => {
+                self.line(";; env — runtime environment variable access");
+                self.generate_expr(name);
+                self.line("call $env_get");
+            }
+            Expr::Trace { label, body, .. } => {
+                self.line(";; trace — performance tracing block");
+                self.generate_expr(label);
+                self.line("call $trace_start");
+                self.line("local.set $__trace_id");
+                for stmt in &body.stmts {
+                    self.generate_stmt(stmt);
+                }
+                self.line("local.get $__trace_id");
+                self.line("call $trace_end");
+            }
+            Expr::Flag { name, .. } => {
+                self.line(";; flag — feature flag check");
+                self.generate_expr(name);
+                self.line("call $flag_is_enabled");
             }
             _ => {
                 self.line(";; TODO: codegen for expr");

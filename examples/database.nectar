@@ -1,0 +1,42 @@
+// database.nectar — Local database (IndexedDB abstraction)
+//
+// Nectar wraps IndexedDB with a sane interface:
+// - Declarative schema with stores and indexes
+// - No raw IndexedDB transactions
+// - Type-safe queries via contracts
+
+db AppDatabase {
+    version: 1,
+
+    store "users" {
+        key: "id",
+        index "email" => "email",
+        index "name" => "name",
+    }
+
+    store "settings" {
+        key: "key",
+    }
+
+    store "drafts" {
+        key: "id",
+        index "updated_at" => "updated_at",
+    }
+}
+
+component UserList() {
+    let mut users: String = "Loading...";
+
+    fn load_users(&mut self) {
+        let data = AppDatabase.query("users");
+        self.users = "Users loaded";
+    }
+
+    render {
+        <div>
+            <h1>"Users"</h1>
+            <p>{self.users}</p>
+            <button on:click={self.load_users}>"Load"</button>
+        </div>
+    }
+}

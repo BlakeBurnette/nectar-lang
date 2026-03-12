@@ -580,6 +580,74 @@ impl TypeChecker {
     // -- first pass: collect top-level declarations -----------------------
 
     fn collect_declarations(&mut self, program: &Program) {
+        // Register builtin time types
+        {
+            // Instant — UTC point in time
+            let mut instant_fields = HashMap::new();
+            instant_fields.insert("unix_ms".to_string(), Ty::I64);
+            self.structs.insert("Instant".to_string(), StructInfo { fields: instant_fields });
+
+            // ZonedDateTime — instant + timezone
+            let mut zdt_fields = HashMap::new();
+            zdt_fields.insert("year".to_string(), Ty::I32);
+            zdt_fields.insert("month".to_string(), Ty::I32);
+            zdt_fields.insert("day".to_string(), Ty::I32);
+            zdt_fields.insert("hour".to_string(), Ty::I32);
+            zdt_fields.insert("minute".to_string(), Ty::I32);
+            zdt_fields.insert("second".to_string(), Ty::I32);
+            zdt_fields.insert("timezone".to_string(), Ty::String_);
+            self.structs.insert("ZonedDateTime".to_string(), StructInfo { fields: zdt_fields });
+
+            // Duration — length of time
+            let mut duration_fields = HashMap::new();
+            duration_fields.insert("ms".to_string(), Ty::I64);
+            self.structs.insert("Duration".to_string(), StructInfo { fields: duration_fields });
+
+            // Date — calendar date (no time)
+            let mut date_fields = HashMap::new();
+            date_fields.insert("year".to_string(), Ty::I32);
+            date_fields.insert("month".to_string(), Ty::I32);
+            date_fields.insert("day".to_string(), Ty::I32);
+            self.structs.insert("Date".to_string(), StructInfo { fields: date_fields });
+
+            // Time — wall clock (no date)
+            let mut time_fields = HashMap::new();
+            time_fields.insert("hour".to_string(), Ty::I32);
+            time_fields.insert("minute".to_string(), Ty::I32);
+            time_fields.insert("second".to_string(), Ty::I32);
+            self.structs.insert("Time".to_string(), StructInfo { fields: time_fields });
+
+            // Register time module functions
+            self.fn_sigs.insert("time::now".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::Struct("Instant".to_string())),
+            });
+            self.fn_sigs.insert("time::zoned".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::Struct("ZonedDateTime".to_string())),
+            });
+            self.fn_sigs.insert("time::date".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Struct("Date".to_string())),
+            });
+            self.fn_sigs.insert("Duration::seconds".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::Struct("Duration".to_string())),
+            });
+            self.fn_sigs.insert("Duration::minutes".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::Struct("Duration".to_string())),
+            });
+            self.fn_sigs.insert("Duration::hours".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::Struct("Duration".to_string())),
+            });
+            self.fn_sigs.insert("Duration::days".to_string(), Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::Struct("Duration".to_string())),
+            });
+        }
+
         for item in &program.items {
             match item {
                 Item::Struct(s) => {
@@ -861,6 +929,12 @@ impl TypeChecker {
                     }
                 }
                 Item::Channel(_) => { /* channel type checking TODO */ }
+                Item::Embed(_) => { /* embed type checking TODO */ }
+                Item::Pdf(_) => { /* pdf type checking TODO */ }
+                Item::Payment(_) => { /* payment type checking TODO */ }
+                Item::Auth(_) => { /* auth type checking TODO */ }
+                Item::Upload(_) => { /* upload type checking TODO */ }
+                Item::Db(_) => { /* db type checking TODO */ }
             }
         }
 
@@ -1867,6 +1941,24 @@ impl TypeChecker {
                 self.infer_expr(path, env);
                 // Dynamic imports return a promise-like async module handle
                 Ty::I32
+            }
+            Expr::Download { data, filename, .. } => {
+                self.infer_expr(data, env);
+                self.infer_expr(filename, env);
+                Ty::Unit
+            }
+            Expr::Env { name, .. } => {
+                self.infer_expr(name, env);
+                Ty::String_
+            }
+            Expr::Trace { label, body, .. } => {
+                self.infer_expr(label, env);
+                self.infer_block(body, env);
+                Ty::Unit
+            }
+            Expr::Flag { name, .. } => {
+                self.infer_expr(name, env);
+                Ty::Bool
             }
         }
     }

@@ -75,7 +75,7 @@ pub fn shake(program: &mut Program, entry_points: &[String], stats: &mut ShakeSt
 
     // Also keep Use items (imports) and Test items always.
     for (i, item) in program.items.iter().enumerate() {
-        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_) | Item::Page(_) | Item::Form(_) | Item::Channel(_)) {
+        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_) | Item::Page(_) | Item::Form(_) | Item::Channel(_) | Item::Embed(_) | Item::Pdf(_) | Item::Payment(_) | Item::Auth(_) | Item::Upload(_) | Item::Db(_)) {
             // Always keep these
             reachable.insert(i);
         }
@@ -127,6 +127,12 @@ fn item_name(item: &Item) -> Option<String> {
         Item::Form(f) => Some(f.name.clone()),
         Item::Channel(ch) => Some(ch.name.clone()),
         Item::Mod(m) => Some(m.name.clone()),
+        Item::Embed(e) => Some(e.name.clone()),
+        Item::Pdf(p) => Some(p.name.clone()),
+        Item::Payment(p) => Some(p.name.clone()),
+        Item::Auth(a) => Some(a.name.clone()),
+        Item::Upload(u) => Some(u.name.clone()),
+        Item::Db(d) => Some(d.name.clone()),
     }
 }
 
@@ -237,6 +243,16 @@ fn collect_item_deps(item: &Item, deps: &mut HashSet<String>) {
         }
         Item::Use(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}
+            Item::Embed(_) => {}
+            Item::Pdf(pdf) => {
+                // Pdf render blocks can reference components
+            }
+            Item::Payment(_) => {}
+            Item::Auth(_) => {}
+            Item::Upload(u) => {
+                collect_expr_deps(&u.endpoint, deps);
+            }
+            Item::Db(_) => {}
             Item::App(app) => {
                 if let Some(ref router) = app.router {
                     for route in &router.routes {
@@ -396,6 +412,16 @@ fn collect_expr_deps(expr: &Expr, deps: &mut HashSet<String>) {
         }
         Expr::PromptTemplate { interpolations, .. } => {
             for (_, e) in interpolations { collect_expr_deps(e, deps); }
+        }
+        Expr::Env { name, .. } => {
+            collect_expr_deps(name, deps);
+        }
+        Expr::Trace { label, body, .. } => {
+            collect_expr_deps(label, deps);
+            collect_block_deps(body, deps);
+        }
+        Expr::Flag { name, .. } => {
+            collect_expr_deps(name, deps);
         }
         _ => {}
     }

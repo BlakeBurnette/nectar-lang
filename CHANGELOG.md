@@ -37,6 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Critical CSS extraction
 - Source map generation
 - Package management (nectar add, nectar install)
+- Third-party embed management: `embed` keyword with sandbox isolation, loading strategies (defer, async, lazy, idle), and subresource integrity (SRI)
+- First-class time types: `Instant`, `ZonedDateTime`, `Duration`, `Date`, `Time` with DST-safe arithmetic and explicit timezone conversions
+- PDF generation: `pdf` keyword renders components to PDF, `download()` builtin triggers file save
+- Payment integration: `payment` keyword with PCI-compliant sandboxed iframes, provider configuration
+- Built-in authentication: `auth` keyword with declarative OAuth providers, session management
+- File uploads: `upload` keyword with progress tracking, MIME type and size validation, chunked/resumable uploads
+- Local database: `db` keyword wrapping IndexedDB with declarative schema, stores, and indexes
+- Observability: `trace` blocks for automatic performance measurement, error tracking with context
+- Feature flags: `flag()` builtin with compile-time dead code elimination
+- Environment variables: `env()` builtin with compile-time validation
+- `nectar audit` command for third-party embed security auditing
+- Dev server `--flags` option for enabling feature flags during development
+- Dev server `--tunnel` option for exposing local server via public URL
 
 ### Build targets
 - `--target pwa` — Progressive Web App

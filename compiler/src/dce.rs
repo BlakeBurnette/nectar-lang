@@ -274,6 +274,16 @@ fn collect_references_in_expr(expr: &Expr, refs: &mut HashSet<String>) {
         Expr::PromptTemplate { interpolations, .. } => {
             for (_, e) in interpolations { collect_references_in_expr(e, refs); }
         }
+        Expr::Env { name, .. } => {
+            collect_references_in_expr(name, refs);
+        }
+        Expr::Trace { label, body, .. } => {
+            collect_references_in_expr(label, refs);
+            for s in &body.stmts { collect_references_in_stmt(s, refs); }
+        }
+        Expr::Flag { name, .. } => {
+            collect_references_in_expr(name, refs);
+        }
         _ => {}
     }
 }

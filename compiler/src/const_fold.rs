@@ -89,6 +89,12 @@ fn fold_item(item: &mut Item, stats: &mut FoldStats) {
         | Item::Router(_) | Item::LazyComponent(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}
             Item::App(_) => {}
+            Item::Embed(_) => {}
+            Item::Pdf(_) => {}
+            Item::Payment(_) => {}
+            Item::Auth(_) => {}
+            Item::Upload(_) => {}
+            Item::Db(_) => {}
             Item::Channel(ch) => {
                 for method in &mut ch.methods {
                     fold_function(method, stats);
@@ -235,6 +241,20 @@ pub fn fold_expr(expr: &mut Expr, stats: &mut FoldStats) {
                     fold_expr(expr, stats);
                 }
             }
+        }
+        Expr::Download { data, filename, .. } => {
+            fold_expr(data, stats);
+            fold_expr(filename, stats);
+        }
+        Expr::Env { name, .. } => {
+            fold_expr(name, stats);
+        }
+        Expr::Trace { label, body, .. } => {
+            fold_expr(label, stats);
+            fold_block(body, stats);
+        }
+        Expr::Flag { name, .. } => {
+            fold_expr(name, stats);
         }
         // Leaf nodes — nothing to fold further into
         Expr::Integer(_) | Expr::Float(_) | Expr::StringLit(_) | Expr::Bool(_)

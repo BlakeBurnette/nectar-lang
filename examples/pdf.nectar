@@ -1,0 +1,36 @@
+// pdf.nectar — PDF generation and file downloads
+//
+// Generate PDFs from render blocks and trigger downloads:
+// - pdf keyword renders components to PDF
+// - download() triggers file save dialog
+// - No jsPDF. No Puppeteer. No headless browser.
+
+pdf InvoicePdf {
+    page_size: "A4",
+    orientation: "portrait",
+
+    render {
+        <div class="invoice">
+            <h1>"Invoice #1234"</h1>
+            <p>"Date: March 12, 2026"</p>
+            <table>
+                <tr><td>"Service"</td><td>"$500.00"</td></tr>
+                <tr><td>"Tax"</td><td>"$50.00"</td></tr>
+                <tr><td>"Total"</td><td>"$550.00"</td></tr>
+            </table>
+        </div>
+    }
+}
+
+component InvoicePage() {
+    fn download_invoice(&self) {
+        download(InvoicePdf, "invoice-1234.pdf");
+    }
+
+    render {
+        <div>
+            <h1>"Invoice"</h1>
+            <button on:click={self.download_invoice}>"Download PDF"</button>
+        </div>
+    }
+}

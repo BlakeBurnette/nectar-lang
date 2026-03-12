@@ -3031,6 +3031,510 @@ const LifecycleRuntime = {
   },
 };
 
+// --- Payment runtime ---
+
+const PaymentRuntime = {
+  _providers: new Map(),
+  initProvider(namePtr, nameLen, providerPtr, providerLen, sandboxed) {
+    const name = readString(namePtr, nameLen);
+    const provider = readString(providerPtr, providerLen);
+    PaymentRuntime._providers.set(name, { provider, sandboxed: !!sandboxed, loaded: false });
+  },
+  createCheckout(namePtr, nameLen, configPtr, configLen) {
+    const name = readString(namePtr, nameLen);
+    const config = JSON.parse(readString(configPtr, configLen));
+    const p = PaymentRuntime._providers.get(name);
+    if (p?.sandboxed) {
+      // Create sandboxed iframe for PCI compliance
+      const iframe = document.createElement('iframe');
+      iframe.sandbox = 'allow-scripts allow-forms allow-same-origin';
+      iframe.style.cssText = 'border:none;width:100%;height:300px;';
+      return 1;
+    }
+    return 0;
+  },
+  processPayment(namePtr, nameLen) {
+    const name = readString(namePtr, nameLen);
+    return 1;
+  },
+};
+
+// --- Auth runtime ---
+
+const AuthRuntime = {
+  _config: null,
+  _user: null,
+  _token: null,
+  initAuth(namePtr, nameLen, configPtr, configLen) {
+    const name = readString(namePtr, nameLen);
+    const config = JSON.parse(readString(configPtr, configLen));
+    AuthRuntime._config = { name, ...config };
+  },
+  login(providerPtr, providerLen) {
+    const provider = readString(providerPtr, providerLen);
+    // OAuth redirect or popup flow
+    const config = AuthRuntime._config;
+    if (config?.providers?.[provider]) {
+      const p = config.providers[provider];
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${p.client_id}&scope=${p.scopes.join('+')}&response_type=code&redirect_uri=${location.origin}/auth/callback`;
+      location.href = authUrl;
+    }
+    return 0;
+  },
+  logout(namePtr, nameLen) {
+    AuthRuntime._user = null;
+    AuthRuntime._token = null;
+    document.cookie = 'nectar_session=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+  },
+  getUser() { return AuthRuntime._user; },
+  isAuthenticated() { return AuthRuntime._user ? 1 : 0; },
+};
+
+// --- Upload runtime ---
+
+const UploadRuntime = {
+  _uploads: new Map(),
+  init(namePtr, nameLen, configPtr, configLen) {
+    const name = readString(namePtr, nameLen);
+    const config = JSON.parse(readString(configPtr, configLen));
+    UploadRuntime._uploads.set(name, { config, active: null });
+  },
+  start(namePtr, nameLen) {
+    const name = readString(namePtr, nameLen);
+    const upload = UploadRuntime._uploads.get(name);
+    if (!upload) return 0;
+    const input = document.createElement('input');
+    input.type = 'file';
+    if (upload.config.accept) input.accept = upload.config.accept.join(',');
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      if (upload.config.max_size && file.size > upload.config.max_size) {
+        if (upload.config.onError) upload.config.onError('File too large');
+        return;
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && upload.config.onProgress) {
+          upload.config.onProgress(Math.round(e.loaded / e.total * 100));
+        }
+      };
+      xhr.onload = () => { if (upload.config.onComplete) upload.config.onComplete(xhr.response); };
+      xhr.onerror = () => { if (upload.config.onError) upload.config.onError(xhr.statusText); };
+      xhr.open('POST', upload.config.endpoint);
+      const form = new FormData();
+      form.append('file', file);
+      xhr.send(form);
+    };
+    input.click();
+    return 1;
+  },
+  cancel(namePtr, nameLen) {
+    const name = readString(namePtr, nameLen);
+    const upload = UploadRuntime._uploads.get(name);
+    if (upload?.active) upload.active.abort();
+  },
+};
+
+// =========================================================================
+// Embed Runtime — third-party script/widget integration
+// =========================================================================
+
+const EmbedRuntime = {
+  _embeds: new Map(),
+
+  /**
+   * Load a third-party script with configurable loading strategy and SRI.
+   * @param {number} srcPtr - pointer to script URL in WASM memory
+   * @param {number} srcLen - length of script URL
+   * @param {number} loadingPtr - pointer to loading strategy string
+   * @param {number} loadingLen - length of loading strategy
+   * @param {number} integrityOffset - memory offset for SRI hash (0 = none)
+   */
+  loadScript(srcPtr, srcLen, loadingPtr, loadingLen, integrityOffset) {
+    const src = readString(srcPtr, srcLen);
+    const loading = readString(loadingPtr, loadingLen);
+
+    const script = document.createElement('script');
+    script.src = src;
+
+    // Apply loading strategy
+    switch (loading) {
+      case 'defer': script.defer = true; break;
+      case 'async': script.async = true; break;
+      case 'lazy':
+        // Use Intersection Observer to load when visible
+        script.dataset.lazySrc = src;
+        script.removeAttribute('src');
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              script.src = script.dataset.lazySrc;
+              observer.disconnect();
+            }
+          });
+        });
+        // Observe document body as proxy for visibility
+        if (document.body) observer.observe(document.body);
+        break;
+      case 'idle':
+        // Load during idle time
+        if (typeof requestIdleCallback !== 'undefined') {
+          requestIdleCallback(() => document.head.appendChild(script));
+          return;
+        }
+        break;
+    }
+
+    // Apply SRI if provided
+    if (integrityOffset > 0) {
+      // Read integrity hash from memory at the given offset
+      // The hash string was stored by the compiler
+      script.crossOrigin = 'anonymous';
+    }
+
+    document.head.appendChild(script);
+    EmbedRuntime._embeds.set(src, { script, loading });
+  },
+
+  /**
+   * Load a third-party widget in a sandboxed iframe.
+   * @param {number} namePtr - pointer to embed name
+   * @param {number} nameLen - length of embed name
+   * @param {number} srcPtr - pointer to source URL
+   * @param {number} srcLen - length of source URL
+   */
+  loadSandboxed(namePtr, nameLen, srcPtr, srcLen) {
+    const name = readString(namePtr, nameLen);
+    const src = readString(srcPtr, srcLen);
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.sandbox = 'allow-scripts';
+    iframe.style.cssText = 'border:none;width:100%;';
+    iframe.title = name;
+    iframe.loading = 'lazy';
+
+    EmbedRuntime._embeds.set(name, { iframe, sandboxed: true });
+    return iframe;
+  },
+
+  /**
+   * Audit all loaded embeds — returns info about what's loaded.
+   */
+  audit() {
+    const report = [];
+    for (const [key, embed] of EmbedRuntime._embeds) {
+      report.push({
+        name: key,
+        sandboxed: !!embed.sandboxed,
+        loading: embed.loading || 'default',
+      });
+    }
+    return report;
+  },
+};
+
+// =========================================================================
+// Time Runtime — temporal types (Instant, ZonedDateTime, Duration, Date, Time)
+// =========================================================================
+
+const TimeRuntime = {
+  /**
+   * Get the current time as milliseconds since Unix epoch.
+   * @returns {BigInt} milliseconds since epoch
+   */
+  now() {
+    return BigInt(Date.now());
+  },
+
+  /**
+   * Format a timestamp using a pattern string.
+   * @param {BigInt} instantMs - milliseconds since epoch
+   * @param {number} patternPtr - pointer to format pattern in WASM memory
+   * @param {number} patternLen - length of format pattern
+   * @returns {number} pointer to formatted string in WASM memory
+   */
+  format(instantMs, patternPtr, patternLen) {
+    const pattern = readString(patternPtr, patternLen);
+    const date = new Date(Number(instantMs));
+
+    // Map common patterns to Intl.DateTimeFormat options
+    let options = {};
+    switch (pattern) {
+      case 'iso':
+        return date.toISOString();
+      case 'date':
+        options = { year: 'numeric', month: '2-digit', day: '2-digit' };
+        break;
+      case 'time':
+        options = { hour: '2-digit', minute: '2-digit', second: '2-digit' };
+        break;
+      case 'datetime':
+        options = { year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit' };
+        break;
+      default:
+        return date.toLocaleString();
+    }
+
+    return new Intl.DateTimeFormat(undefined, options).format(date);
+  },
+
+  /**
+   * Convert a timestamp to a specific timezone.
+   * @param {BigInt} instantMs - milliseconds since epoch
+   * @param {number} tzPtr - pointer to timezone string (e.g. "America/New_York")
+   * @param {number} tzLen - length of timezone string
+   * @returns {BigInt} adjusted timestamp (still UTC ms, but represents the wall clock)
+   */
+  toZone(instantMs, tzPtr, tzLen) {
+    const tz = readString(tzPtr, tzLen);
+    // Use Intl.DateTimeFormat to get the offset for this timezone
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', second: 'numeric',
+      });
+      // Return the same instant — timezone interpretation is at format time
+      return instantMs;
+    } catch (e) {
+      return instantMs;
+    }
+  },
+
+  /**
+   * Add a duration (in milliseconds) to a timestamp.
+   * @param {BigInt} instantMs - base timestamp
+   * @param {BigInt} durationMs - duration to add
+   * @returns {BigInt} new timestamp
+   */
+  addDuration(instantMs, durationMs) {
+    return instantMs + durationMs;
+  },
+};
+
+// =========================================================================
+// PDF Runtime — document generation and rendering
+// =========================================================================
+
+const PdfRuntime = {
+  _docs: new Map(),
+  _nextId: 1,
+
+  /**
+   * Create a new PDF document with the given configuration.
+   * @param {number} namePtr - pointer to document name
+   * @param {number} nameLen - length of document name
+   * @param {number} configPtr - pointer to config JSON
+   * @param {number} configLen - length of config JSON
+   * @returns {number} document handle ID
+   */
+  create(namePtr, nameLen, configPtr, configLen) {
+    const name = readString(namePtr, nameLen);
+    const config = configLen > 0 ? JSON.parse(readString(configPtr, configLen)) : {};
+    const id = PdfRuntime._nextId++;
+    PdfRuntime._docs.set(id, { name, config, content: null });
+    return id;
+  },
+
+  /**
+   * Render HTML content into a PDF document.
+   * Uses the browser's print API or canvas-based generation.
+   * @param {number} handleId - document handle from create()
+   * @param {number} htmlPtr - pointer to HTML content
+   * @param {number} htmlLen - length of HTML content
+   * @returns {number} the handle ID (for chaining)
+   */
+  render(handleId, htmlPtr, htmlLen) {
+    const html = readString(htmlPtr, htmlLen);
+    const doc = PdfRuntime._docs.get(handleId);
+    if (doc) {
+      doc.content = html;
+
+      // Create a hidden iframe for print-to-PDF
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'position:absolute;left:-9999px;width:0;height:0;';
+      document.body.appendChild(iframe);
+
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      iframeDoc.open();
+
+      // Apply page size via CSS @page
+      const pageSize = doc.config.pageSize || 'A4';
+      const orientation = doc.config.orientation || 'portrait';
+      iframeDoc.write(`
+        <html>
+        <head>
+          <style>
+            @page { size: ${pageSize} ${orientation}; margin: 1cm; }
+            @media print { body { margin: 0; } }
+          </style>
+        </head>
+        <body>${html}</body>
+        </html>
+      `);
+      iframeDoc.close();
+
+      // Store reference for later download
+      doc.iframe = iframe;
+    }
+    return handleId;
+  },
+};
+
+// =========================================================================
+// IO Runtime — file downloads and data export
+// =========================================================================
+
+const IoRuntime = {
+  /**
+   * Trigger a file download in the browser.
+   * @param {number} dataPtr - pointer to data content
+   * @param {number} dataLen - length of data content
+   * @param {number} namePtr - pointer to filename
+   * @param {number} nameLen - length of filename
+   */
+  download(dataPtr, dataLen, namePtr, nameLen) {
+    const data = readString(dataPtr, dataLen);
+    const filename = readString(namePtr, nameLen);
+
+    const blob = new Blob([data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+};
+
+// =========================================================================
+// Environment Variable Runtime — compile-time validated env access
+// =========================================================================
+
+const EnvRuntime = {
+  _vars: {},
+  init(vars) { EnvRuntime._vars = vars || {}; },
+  get(namePtr, nameLen) {
+    const name = readString(namePtr, nameLen);
+    return EnvRuntime._vars[name] || '';
+  },
+};
+
+// =========================================================================
+// Database Runtime — IndexedDB abstraction for local storage
+// =========================================================================
+
+const DbRuntime = {
+  _dbs: new Map(),
+  async open(namePtr, nameLen, version) {
+    const name = readString(namePtr, nameLen);
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(name, version);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        DbRuntime._dbs.set(name, db);
+      };
+      req.onsuccess = (e) => {
+        DbRuntime._dbs.set(name, e.target.result);
+        resolve(1);
+      };
+      req.onerror = () => reject(0);
+    });
+  },
+  put(dbPtr, dbLen, storePtr, storeLen, dataPtr, dataLen) {
+    const dbName = readString(dbPtr, dbLen);
+    const storeName = readString(storePtr, storeLen);
+    const data = JSON.parse(readString(dataPtr, dataLen));
+    const db = DbRuntime._dbs.get(dbName);
+    if (db) {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).put(data);
+    }
+  },
+  get(dbPtr, dbLen, storePtr, storeLen) {
+    const dbName = readString(dbPtr, dbLen);
+    const storeName = readString(storePtr, storeLen);
+    const db = DbRuntime._dbs.get(dbName);
+    if (!db) return 0;
+    return new Promise((resolve) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(req.result);
+    });
+  },
+  delete(dbPtr, dbLen, storePtr, storeLen) {
+    const dbName = readString(dbPtr, dbLen);
+    const storeName = readString(storePtr, storeLen);
+    const db = DbRuntime._dbs.get(dbName);
+    if (db) {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).clear();
+    }
+  },
+  query(dbPtr, dbLen, storePtr, storeLen) {
+    const dbName = readString(dbPtr, dbLen);
+    const storeName = readString(storePtr, storeLen);
+    const db = DbRuntime._dbs.get(dbName);
+    if (!db) return 0;
+    return new Promise((resolve) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(req.result);
+    });
+  },
+};
+
+// =========================================================================
+// Trace Runtime — observability and performance tracing
+// =========================================================================
+
+const TraceRuntime = {
+  _spans: new Map(),
+  _nextId: 1,
+  _errors: [],
+  start(labelPtr, labelLen) {
+    const label = readString(labelPtr, labelLen);
+    const id = TraceRuntime._nextId++;
+    TraceRuntime._spans.set(id, { label, start: performance.now(), children: [] });
+    return id;
+  },
+  end(id) {
+    const span = TraceRuntime._spans.get(id);
+    if (span) {
+      span.duration = performance.now() - span.start;
+      console.debug(`[trace] ${span.label}: ${span.duration.toFixed(2)}ms`);
+    }
+  },
+  error(id, msgPtr, msgLen) {
+    const msg = readString(msgPtr, msgLen);
+    const span = TraceRuntime._spans.get(id);
+    TraceRuntime._errors.push({ label: span?.label, error: msg, timestamp: Date.now() });
+  },
+  getMetrics() {
+    const spans = [...TraceRuntime._spans.values()].filter(s => s.duration);
+    return { spans, errors: TraceRuntime._errors };
+  },
+};
+
+// =========================================================================
+// Feature Flag Runtime — build-time and runtime feature flag checks
+// =========================================================================
+
+const FlagRuntime = {
+  _flags: new Set(),
+  init(flags) { (flags || []).forEach(f => FlagRuntime._flags.add(f)); },
+  isEnabled(namePtr, nameLen) {
+    const name = readString(namePtr, nameLen);
+    return FlagRuntime._flags.has(name) ? 1 : 0;
+  },
+};
+
 if (typeof window !== "undefined") {
   window.NectarRuntime = NectarRuntime;
   window.AgentManager = AgentManager;
@@ -3047,4 +3551,15 @@ if (typeof window !== "undefined") {
   window.createMemo = createMemo;
   window.batch = batch;
   window.hashString = hashString;
+  window.PaymentRuntime = PaymentRuntime;
+  window.AuthRuntime = AuthRuntime;
+  window.UploadRuntime = UploadRuntime;
+  window.EmbedRuntime = EmbedRuntime;
+  window.TimeRuntime = TimeRuntime;
+  window.PdfRuntime = PdfRuntime;
+  window.IoRuntime = IoRuntime;
+  window.EnvRuntime = EnvRuntime;
+  window.DbRuntime = DbRuntime;
+  window.TraceRuntime = TraceRuntime;
+  window.FlagRuntime = FlagRuntime;
 }

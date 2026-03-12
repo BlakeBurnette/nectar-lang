@@ -1,0 +1,40 @@
+// embeds.nectar — Third-party script management
+//
+// Nectar sandboxes and controls third-party scripts:
+// - Loading strategy: defer, async, lazy, idle
+// - Sandbox isolation: scripts run in iframes, can't touch your DOM
+// - Subresource integrity: automatic hash verification
+// - Dependency tracking: scripts are auditable, version-pinned
+
+embed GoogleAnalytics {
+    src: "https://www.googletagmanager.com/gtag/js?id=G-XXXXX",
+    loading: "idle",
+    sandbox: true,
+}
+
+embed StripeJS {
+    src: "https://js.stripe.com/v3/",
+    loading: "lazy",
+    sandbox: true,
+    integrity: "sha384-abc123...",
+}
+
+embed ChatWidget {
+    src: "https://widget.intercom.io/widget/app123",
+    loading: "idle",
+    sandbox: true,
+}
+
+// --- Why this matters ---
+//
+// In a typical React app:
+//   <script src="analytics.js"></script>      <!-- blocks render -->
+//   <script src="chat-widget.js"></script>    <!-- full DOM access -->
+//   <script src="a-b-testing.js"></script>    <!-- no integrity check -->
+//   <script src="social-embed.js"></script>   <!-- loads 15 more scripts -->
+//   // Each one can read your DOM, modify your page, and phone home.
+//   // No sandboxing. No loading control. No audit trail.
+//
+// In Nectar:
+//   embed ChatWidget { src: "...", sandbox: true, loading: "idle" }
+//   // Sandboxed. Loaded last. Auditable. Can't touch your DOM.

@@ -1,0 +1,41 @@
+// uploads.nectar — File upload handling
+//
+// Nectar makes file uploads a language construct:
+// - Progress tracking built in
+// - Max size and MIME type validation
+// - Chunked/resumable uploads for large files
+
+upload AvatarUpload {
+    endpoint: "/api/upload/avatar",
+    max_size: 5242880,
+    accept: ["image/png", "image/jpeg", "image/webp"],
+    chunked: false,
+
+    fn on_progress(percent: i32) {
+        // Update progress bar
+    }
+
+    fn on_complete(response: String) {
+        // Upload finished — update UI
+    }
+
+    fn on_error(error: String) {
+        // Upload failed — show error
+    }
+}
+
+component ProfileSettings() {
+    let mut upload_progress: i32 = 0;
+
+    fn change_avatar(&mut self) {
+        AvatarUpload.start();
+    }
+
+    render {
+        <div>
+            <h1>"Profile Settings"</h1>
+            <button on:click={self.change_avatar}>"Change Avatar"</button>
+            <p>{f"Upload: {self.upload_progress}%"}</p>
+        </div>
+    }
+}

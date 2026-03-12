@@ -47,6 +47,18 @@ pub enum Item {
     Form(FormDef),
     /// Channel definition — real-time WebSocket connection with handlers
     Channel(ChannelDef),
+    /// Third-party embed — sandboxed external script integration
+    Embed(EmbedDef),
+    /// PDF document definition — generates downloadable PDF documents
+    Pdf(PdfDef),
+    /// Payment gateway definition — PCI-compliant payment processing
+    Payment(PaymentDef),
+    /// Authentication definition — OAuth, JWT, session-based auth
+    Auth(AuthDef),
+    /// File upload definition — resumable chunked file uploads
+    Upload(UploadDef),
+    /// Local database definition (IndexedDB abstraction)
+    Db(DbDef),
 }
 
 /// Contract definition — an API boundary type that generates:
@@ -223,6 +235,123 @@ pub struct ChannelDef {
     pub heartbeat_interval: Option<u64>,
     pub methods: Vec<Function>,
     pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Third-party embed definition — sandboxed external script/widget integration
+///
+/// ```nectar
+/// embed GoogleAnalytics {
+///     src: "https://www.googletagmanager.com/gtag/js?id=G-XXXXX",
+///     loading: "lazy",
+///     sandbox: true,
+///     integrity: "sha384-...",
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct EmbedDef {
+    pub name: String,
+    pub src: Expr,
+    pub loading: Option<String>,     // "defer", "async", "lazy", "idle"
+    pub sandbox: bool,
+    pub integrity: Option<Expr>,     // SRI hash
+    pub permissions: Option<PermissionsDef>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// PDF document definition — generates downloadable PDF documents
+///
+/// ```nectar
+/// pdf InvoicePdf {
+///     page_size: "A4",
+///     orientation: "portrait",
+///     render {
+///         <div>...</div>
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PdfDef {
+    pub name: String,
+    pub render: RenderBlock,
+    pub page_size: Option<String>,   // "A4", "letter", etc.
+    pub orientation: Option<String>, // "portrait", "landscape"
+    pub margins: Option<Expr>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Payment gateway definition — PCI-compliant payment processing
+#[derive(Debug, Clone)]
+pub struct PaymentDef {
+    pub name: String,
+    pub provider: Option<Expr>,        // "stripe", "paypal", etc.
+    pub public_key: Option<Expr>,
+    pub sandbox_mode: bool,            // PCI-compliant isolation
+    pub on_success: Option<Function>,
+    pub on_error: Option<Function>,
+    pub methods: Vec<Function>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Authentication definition — OAuth, JWT, session-based auth
+#[derive(Debug, Clone)]
+pub struct AuthDef {
+    pub name: String,
+    pub provider: Option<Expr>,         // "oauth", "jwt", "session"
+    pub providers: Vec<AuthProvider>,
+    pub on_login: Option<Function>,
+    pub on_logout: Option<Function>,
+    pub on_error: Option<Function>,
+    pub session_storage: Option<String>, // "cookie", "local", "session"
+    pub methods: Vec<Function>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// An individual auth provider configuration (e.g. Google, GitHub, email)
+#[derive(Debug, Clone)]
+pub struct AuthProvider {
+    pub name: String,      // "google", "github", "email"
+    pub client_id: Option<Expr>,
+    pub scopes: Vec<String>,
+    pub span: Span,
+}
+
+/// File upload definition — resumable chunked file uploads
+#[derive(Debug, Clone)]
+pub struct UploadDef {
+    pub name: String,
+    pub endpoint: Expr,
+    pub max_size: Option<Expr>,        // bytes
+    pub accept: Vec<String>,           // MIME types: ["image/*", "application/pdf"]
+    pub chunked: bool,                 // resumable chunked upload
+    pub on_progress: Option<Function>,
+    pub on_complete: Option<Function>,
+    pub on_error: Option<Function>,
+    pub methods: Vec<Function>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Local database definition — IndexedDB abstraction
+#[derive(Debug, Clone)]
+pub struct DbDef {
+    pub name: String,
+    pub version: Option<u32>,
+    pub stores: Vec<DbStoreDef>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// A single object store within a database definition
+#[derive(Debug, Clone)]
+pub struct DbStoreDef {
+    pub name: String,
+    pub key: String,
+    pub indexes: Vec<(String, String)>,  // (name, key_path)
     pub span: Span,
 }
 
@@ -898,6 +1027,32 @@ pub enum Expr {
     /// Dynamic import: `import("./module")` — triggers code split
     DynamicImport {
         path: Box<Expr>,
+        span: Span,
+    },
+
+    /// Download trigger — `download(data, "filename.ext")`
+    Download {
+        data: Box<Expr>,
+        filename: Box<Expr>,
+        span: Span,
+    },
+
+    /// env("VAR_NAME") — compile-time validated environment variable access
+    Env {
+        name: Box<Expr>,
+        span: Span,
+    },
+
+    /// trace("label") { ... } — performance/error tracing block
+    Trace {
+        label: Box<Expr>,
+        body: Block,
+        span: Span,
+    },
+
+    /// flag("feature_name") — compile-time feature flag check
+    Flag {
+        name: Box<Expr>,
         span: Span,
     },
 }

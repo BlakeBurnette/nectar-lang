@@ -1,0 +1,36 @@
+// payments.nectar — PCI-compliant payment integration
+//
+// Nectar makes payments safe by default:
+// - Payment forms run in sandboxed iframes (PCI compliance)
+// - Card numbers never touch your component state
+// - The compiler guarantees payment data isolation
+
+payment Checkout {
+    provider: "stripe",
+    public_key: env("STRIPE_PUBLIC_KEY"),
+    sandbox: true,
+
+    fn on_success(result: String) {
+        // Payment succeeded — redirect or show confirmation
+    }
+
+    fn on_error(error: String) {
+        // Payment failed — show error to user
+    }
+}
+
+component PricingPage() {
+    fn start_checkout(&self) {
+        Checkout.process();
+    }
+
+    render {
+        <main>
+            <h1>"Pricing"</h1>
+            <div class="plan">
+                <h2>"Pro Plan — $29/mo"</h2>
+                <button on:click={self.start_checkout}>"Subscribe"</button>
+            </div>
+        </main>
+    }
+}

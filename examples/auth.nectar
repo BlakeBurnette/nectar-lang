@@ -1,0 +1,46 @@
+// auth.nectar — Built-in authentication
+//
+// Nectar provides auth as a language construct:
+// - OAuth providers configured declaratively
+// - Session management built in
+// - No NextAuth. No Auth0 SDK. No Passport.js.
+
+auth AppAuth {
+    session: "cookie",
+
+    provider "google" {
+        client_id: env("GOOGLE_CLIENT_ID"),
+        scopes: ["profile", "email"],
+    }
+
+    provider "github" {
+        client_id: env("GITHUB_CLIENT_ID"),
+        scopes: ["user:email"],
+    }
+
+    fn on_login(user: String) {
+        // User authenticated — redirect to dashboard
+    }
+
+    fn on_logout() {
+        // User logged out — redirect to home
+    }
+}
+
+component LoginPage() {
+    fn login_google(&self) {
+        AppAuth.login("google");
+    }
+
+    fn login_github(&self) {
+        AppAuth.login("github");
+    }
+
+    render {
+        <main>
+            <h1>"Sign In"</h1>
+            <button on:click={self.login_google}>"Continue with Google"</button>
+            <button on:click={self.login_github}>"Continue with GitHub"</button>
+        </main>
+    }
+}

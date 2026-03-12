@@ -1,0 +1,49 @@
+// time.nectar — First-class time and timezone support
+//
+// Nectar has proper time types — no more Date() disasters:
+// - Instant: UTC point in time (unambiguous)
+// - ZonedDateTime: instant + timezone
+// - Duration: length of time
+// - Date: calendar date (no time)
+// - Time: wall clock (no date)
+//
+// No moment.js. No date-fns. No Temporal polyfill.
+
+component MeetingScheduler() {
+    let now: Instant = time.now();
+    let meeting_time: String = "";
+
+    fn schedule_meeting(&mut self) {
+        let meeting: ZonedDateTime = time.zoned("2026-03-15T14:00", "America/New_York");
+        let duration: Duration = Duration.hours(2);
+
+        // Timezone conversion — explicit, never implicit
+        let tokyo_time: ZonedDateTime = meeting.in_timezone("Asia/Tokyo");
+        let london_time: ZonedDateTime = meeting.in_timezone("Europe/London");
+
+        // Safe formatting
+        self.meeting_time = meeting.format("MMMM d, yyyy h:mm a z");
+
+        // Arithmetic that handles DST correctly
+        let next_week: ZonedDateTime = meeting.add(Duration.days(7));
+    }
+
+    render {
+        <div>
+            <h1>"Meeting Scheduler"</h1>
+            <p>{self.meeting_time}</p>
+            <button on:click={self.schedule_meeting}>"Schedule"</button>
+        </div>
+    }
+}
+
+// --- Why this matters ---
+//
+// JavaScript Date:
+//   new Date("2026-03-15")  // Midnight UTC? Local? Who knows!
+//   date.getTimezoneOffset() // Returns minutes. Negative. Sometimes.
+//   date.setMonth(date.getMonth() + 1) // March 31 + 1 month = May 1. Wait, what?
+//
+// Nectar:
+//   let d = time.zoned("2026-03-15T14:00", "America/New_York");
+//   // Unambiguous. Timezone-aware. DST-safe. No surprises.

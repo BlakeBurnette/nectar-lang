@@ -146,6 +146,10 @@ enum Commands {
         /// Extract and inline critical CSS during SSR builds
         #[arg(long)]
         critical_css: bool,
+
+        /// Comma-separated feature flags to enable (e.g., --flags new_ui,dark_mode)
+        #[arg(long, value_delimiter = ',')]
+        flags: Vec<String>,
     },
     /// Compile and run test blocks
     Test {
@@ -173,6 +177,10 @@ enum Commands {
         /// Port to serve on (default: 3000)
         #[arg(short, long, default_value = "3000")]
         port: u16,
+
+        /// Expose the dev server via a public tunnel URL (future: cloudflared/ngrok)
+        #[arg(long)]
+        tunnel: bool,
     },
     /// Format Nectar source files
     Fmt {
@@ -231,10 +239,14 @@ fn main() -> anyhow::Result<()> {
             no_check,
             opt_level,
             critical_css,
+            flags,
         }) => {
             // Resolve dependencies first, then compile.
             if let Err(e) = cmd_install() {
                 eprintln!("warning: dependency resolution failed: {}", e);
+            }
+            if !flags.is_empty() {
+                eprintln!("[info] feature flags enabled: {}", flags.join(", "));
             }
             let input = input.ok_or_else(|| {
                 anyhow::anyhow!("no input file specified for `nectar build`")
@@ -245,7 +257,11 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Fmt { input, check, stdin }) => cmd_fmt(input, check, stdin),
         Some(Commands::Lint { input, fix }) => cmd_lint(&input, fix),
         Some(Commands::Check { input }) => cmd_check(&input),
-        Some(Commands::Dev { src, build_dir, port }) => {
+        Some(Commands::Dev { src, build_dir, port, tunnel }) => {
+            if tunnel {
+                // TODO: integrate cloudflared/ngrok tunnel for public URL
+                eprintln!("[info] --tunnel flag is a placeholder; tunnel support coming soon");
+            }
             let server = devserver::DevServer::new(src, build_dir);
             server.start(port).map_err(|e| anyhow::anyhow!("Dev server error: {}", e))
         }

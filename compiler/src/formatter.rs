@@ -179,6 +179,46 @@ impl Formatter {
                 self.push("}\n");
             }
             Item::Mod(m) => self.format_mod(m),
+            Item::Embed(e) => {
+                self.push_indent();
+                if e.is_pub { self.push("pub "); }
+                self.push(&format!("embed {} {{\n", e.name));
+                self.indent += 1;
+                self.push_indent();
+                self.push(&format!("src: {:?},\n", e.src));
+                if let Some(ref loading) = e.loading {
+                    self.push_indent();
+                    self.push(&format!("loading: \"{}\",\n", loading));
+                }
+                if e.sandbox {
+                    self.push_indent();
+                    self.push("sandbox: true,\n");
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
+            Item::Pdf(p) => {
+                self.push_indent();
+                if p.is_pub { self.push("pub "); }
+                self.push(&format!("pdf {} {{\n", p.name));
+                self.indent += 1;
+                if let Some(ref size) = p.page_size {
+                    self.push_indent();
+                    self.push(&format!("page_size: \"{}\",\n", size));
+                }
+                if let Some(ref orient) = p.orientation {
+                    self.push_indent();
+                    self.push(&format!("orientation: \"{}\",\n", orient));
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
+            Item::Payment(_) => {}
+            Item::Auth(_) => {}
+            Item::Upload(_) => {}
+            Item::Db(_) => {}
         }
     }
 
@@ -1033,6 +1073,20 @@ impl Formatter {
 
             Expr::DynamicImport { path, .. } => {
                 format!("import({})", self.format_expr_inner(path, depth))
+            }
+
+            Expr::Download { data, filename, .. } => {
+                format!("download({}, {})", self.format_expr_inner(data, depth), self.format_expr_inner(filename, depth))
+            }
+            Expr::Env { name, .. } => {
+                format!("env({})", self.format_expr_inner(name, depth))
+            }
+            Expr::Trace { label, body, .. } => {
+                let body_str = self.format_block_to_string(body, depth + 1);
+                format!("trace({}) {{\n{}{}}}", self.format_expr_inner(label, depth), body_str, " ".repeat(depth * self.options.indent_size))
+            }
+            Expr::Flag { name, .. } => {
+                format!("flag({})", self.format_expr_inner(name, depth))
             }
         }
     }

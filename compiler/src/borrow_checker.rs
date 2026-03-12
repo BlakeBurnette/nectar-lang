@@ -698,6 +698,28 @@ impl Checker {
             Expr::DynamicImport { path, .. } => {
                 self.check_expr(path, span);
             }
+            Expr::Download { data, filename, .. } => {
+                self.check_expr(data, span);
+                self.check_expr(filename, span);
+            }
+            Expr::Env { name, .. } => {
+                self.check_expr(name, span);
+            }
+            Expr::Trace { label, body, .. } => {
+                self.check_expr(label, span);
+                for stmt in &body.stmts {
+                    match stmt {
+                        Stmt::Expr(e) | Stmt::Let { value: e, .. } | Stmt::Signal { value: e, .. } | Stmt::Yield(e) => {
+                            self.check_expr(e, span);
+                        }
+                        Stmt::Return(Some(e)) => self.check_expr(e, span),
+                        _ => {}
+                    }
+                }
+            }
+            Expr::Flag { name, .. } => {
+                self.check_expr(name, span);
+            }
         }
     }
 

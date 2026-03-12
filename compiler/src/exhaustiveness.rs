@@ -550,6 +550,20 @@ fn walk_expr(expr: &Expr, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
                 }
             }
         }
+        Expr::Download { data, filename, .. } => {
+            walk_expr(data, enums, errors);
+            walk_expr(filename, enums, errors);
+        }
+        Expr::Env { name, .. } => {
+            walk_expr(name, enums, errors);
+        }
+        Expr::Trace { label, body, .. } => {
+            walk_expr(label, enums, errors);
+            walk_block(body, enums, errors);
+        }
+        Expr::Flag { name, .. } => {
+            walk_expr(name, enums, errors);
+        }
         Expr::Channel { .. }
         | Expr::Integer(_) | Expr::Float(_) | Expr::StringLit(_)
         | Expr::Bool(_) | Expr::Ident(_) | Expr::SelfExpr => {}
@@ -623,6 +637,12 @@ fn walk_item(item: &Item, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
             }
         Item::Struct(_) | Item::Enum(_) | Item::Use(_) | Item::Router(_)
         | Item::LazyComponent(_) | Item::Trait(_) | Item::Mod(_) => {}
+        Item::Embed(_) => {}
+        Item::Pdf(_) => {}
+        Item::Payment(_) => {}
+        Item::Auth(_) => {}
+        Item::Upload(_) => {}
+        Item::Db(_) => {}
     }
 }
 
