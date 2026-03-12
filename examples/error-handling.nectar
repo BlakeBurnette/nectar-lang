@@ -1,0 +1,66 @@
+// error-handling.nectar — Exhaustive error handling
+//
+// Nectar enforces that errors are always handled:
+// - Result and Option types with mandatory handling
+// - `must_use` functions — compiler error if return value is ignored
+// - Exhaustive match on Result/Option — both arms required
+// - No silent failures, no unhandled promise rejections
+
+must_use fn fetch_user(id: String) -> Result<String, String> {
+    let response = fetch("/api/users");
+    return Ok("user data");
+}
+
+fn process() {
+    // This would be a COMPILE ERROR:
+    // fetch_user("123");
+    // error: return value of must_use function `fetch_user` must be used
+
+    // Must handle both success and failure:
+    let result = fetch_user("123");
+    match result {
+        Ok(user) => {
+            // use the user data
+        },
+        Err(error) => {
+            // handle the error — can't skip this
+        },
+    }
+}
+
+// --- Option types ---
+
+fn find_item(id: String) -> Option<String> {
+    return None;
+}
+
+fn use_item() {
+    let item = find_item("abc");
+
+    // This would be a COMPILE ERROR:
+    // match item { Some(i) => { ... } }
+    // error: non-exhaustive match — missing `None` arm
+
+    match item {
+        Some(i) => {
+            // use the item
+        },
+        None => {
+            // handle missing item — compiler requires this
+        },
+    }
+}
+
+// --- Why this matters ---
+//
+// In JavaScript:
+//   fetch('/api/user')           // Returns a Promise
+//     .then(r => r.json())       // Could fail silently
+//     .then(data => use(data));  // No .catch() — unhandled rejection
+//   // Error? What error? The app just... stops working.
+//   // No compiler. No warning. Nothing.
+//
+// In Nectar:
+//   let result = fetch_user("123");  // Returns Result<User, Error>
+//   // Compiler REQUIRES you to handle both Ok and Err.
+//   // Unhandled errors are impossible.

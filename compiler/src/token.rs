@@ -50,6 +50,9 @@ pub enum TokenKind {
     Select,
     Parallel,
     Stream,
+    OnMessage,
+    OnConnect,
+    OnDisconnect,
     Lazy,
     Suspend,
     Yield,
@@ -90,6 +93,13 @@ pub enum TokenKind {
     Sitemap,
     Schema,
     Canonical,
+    Form,
+    Field,
+    Validate,
+    MustUse,
+    Chunk,
+    Atomic,
+    Selector,
 
     // Types
     I32,

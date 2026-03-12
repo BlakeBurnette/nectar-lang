@@ -94,6 +94,15 @@ impl WasmCodegen {
         self.line("(import \"worker\" \"channelSend\" (func $worker_channelSend (param i32 i32 i32)))");
         self.line("(import \"worker\" \"channelRecv\" (func $worker_channelRecv (param i32 i32)))");
         self.line("(import \"worker\" \"parallel\" (func $worker_parallel (param i32 i32 i32)))");
+        self.line("(import \"worker\" \"await\" (func $worker_await (param i32) (result i32)))");
+
+        // Import channel/WebSocket runtime
+        self.line("");
+        self.line(";; Channel (WebSocket) runtime imports");
+        self.line("(import \"channel\" \"connect\" (func $channel_connect (param i32 i32 i32 i32)))");
+        self.line("(import \"channel\" \"send\" (func $channel_send (param i32 i32 i32 i32)))");
+        self.line("(import \"channel\" \"close\" (func $channel_close (param i32 i32)))");
+        self.line("(import \"channel\" \"setReconnect\" (func $channel_set_reconnect (param i32 i32 i32)))");
 
         // Import AI runtime — LLM interaction primitives
         self.line("");
@@ -247,6 +256,31 @@ impl WasmCodegen {
         self.line("(import \"seo\" \"registerRoute\" (func $seo_register_route (param i32 i32 i32 i32)))");
         self.line("(import \"seo\" \"emitStaticHtml\" (func $seo_emit_static_html (param i32 i32)))");
 
+        // Form runtime imports
+        self.line("");
+        self.line(";; Form runtime imports");
+        self.line("(import \"form\" \"registerForm\" (func $form_register (param i32 i32 i32 i32)))");
+        self.line("(import \"form\" \"validate\" (func $form_validate (param i32 i32) (result i32)))");
+        self.line("(import \"form\" \"setFieldError\" (func $form_set_field_error (param i32 i32 i32 i32)))");
+
+        // Code splitting / loader runtime imports
+        self.line("");
+        self.line(";; Loader runtime imports — code splitting");
+        self.line("(import \"loader\" \"loadChunk\" (func $load_chunk (param i32 i32) (result i32)))");
+        self.line("(import \"loader\" \"preloadChunk\" (func $preload_chunk (param i32 i32)))");
+
+        // Atomic state runtime imports — race-free concurrent state management
+        self.line("");
+        self.line(";; Atomic state runtime imports");
+        self.line("(import \"state\" \"atomicGet\" (func $state_atomic_get (param i32) (result i32)))");
+        self.line("(import \"state\" \"atomicSet\" (func $state_atomic_set (param i32 i32)))");
+        self.line("(import \"state\" \"atomicCompareSwap\" (func $state_atomic_cas (param i32 i32 i32) (result i32)))");
+
+        // Lifecycle runtime imports — component cleanup
+        self.line("");
+        self.line(";; Lifecycle runtime imports");
+        self.line("(import \"lifecycle\" \"registerCleanup\" (func $lifecycle_register_cleanup (param i32 i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
@@ -335,6 +369,8 @@ impl WasmCodegen {
             }
             Item::App(app) => self.generate_app(app),
             Item::Page(page) => self.generate_page(page),
+            Item::Form(form) => self.generate_form(form),
+            Item::Channel(ch) => self.generate_channel(ch),
             _ => {
                 self.line(&format!(";; TODO: codegen for {:?}", std::mem::discriminant(item)));
             }
@@ -636,6 +672,13 @@ impl WasmCodegen {
 
         let comp_name = &comp.name;
 
+        // Chunk boundary marker for code splitting
+        if let Some(ref chunk_name) = comp.chunk {
+            self.line(&format!(";; chunk boundary: \"{}\" — component \"{}\" will be split into a separate chunk", chunk_name, comp_name));
+            let offset = self.store_string(chunk_name);
+            self.line(&format!(";; chunk registration: preload \"{}\" at offset {}", chunk_name, offset));
+        }
+
         // Generate the init/mount function
         self.emit(&format!("(func ${comp_name}_mount (export \"{comp_name}_mount\") (param $root i32)"));
         self.indent += 1;
@@ -645,10 +688,15 @@ impl WasmCodegen {
             self.line(&format!("(local ${} i32) ;; signal ID for {}", state.name, state.name));
         }
 
-        // Initialize signals via runtime
+        // Initialize signals via runtime — use atomic operations for atomic signals
         for state in &comp.state {
             self.generate_expr(&state.initializer);
-            self.line("call $signal_create");
+            if state.atomic {
+                self.line(";; atomic signal — uses lock-free concurrent access");
+                self.line("call $signal_create");
+            } else {
+                self.line("call $signal_create");
+            }
             self.line(&format!("local.set ${}", state.name));
         }
 
@@ -737,6 +785,27 @@ impl WasmCodegen {
         // Generate methods (non-handler versions)
         for method in &comp.methods {
             self.generate_function(method);
+        }
+
+        // Generate on_destroy lifecycle cleanup function
+        if let Some(ref destroy_fn) = comp.on_destroy {
+            self.line("");
+            self.line(&format!(";; lifecycle: on_destroy for {}", comp_name));
+            self.emit(&format!("(func ${comp_name}_on_destroy (export \"{comp_name}_on_destroy\")"));
+            self.indent += 1;
+            for stmt in &destroy_fn.body.stmts {
+                self.generate_stmt(stmt);
+            }
+            self.indent -= 1;
+            self.line(")");
+
+            // Register cleanup with lifecycle runtime
+            self.line("");
+            self.line(&format!(";; register cleanup callback for {}", comp_name));
+            let name_offset = self.store_string(comp_name);
+            self.line(&format!("i32.const {}", name_offset));
+            self.line(&format!("i32.const {}", comp_name.len()));
+            self.line("call $lifecycle_register_cleanup");
         }
     }
 
@@ -866,6 +935,106 @@ impl WasmCodegen {
                 (offset, s.len())
             }
             _ => (0, 0),
+        }
+    }
+
+    fn generate_form(&mut self, form: &FormDef) {
+        self.line(&format!(";; === Form: {} ===", form.name));
+
+        // Build schema JSON for form registration
+        let mut schema_json = String::from("{\"fields\":[");
+        for (i, field) in form.fields.iter().enumerate() {
+            if i > 0 { schema_json.push(','); }
+            schema_json.push_str(&format!("{{\"name\":\"{}\",\"type\":\"{:?}\",\"validators\":[", field.name, field.ty));
+            for (j, v) in field.validators.iter().enumerate() {
+                if j > 0 { schema_json.push(','); }
+                match &v.kind {
+                    ValidatorKind::Required => schema_json.push_str("{\"kind\":\"required\"}"),
+                    ValidatorKind::MinLength(n) => schema_json.push_str(&format!("{{\"kind\":\"min_length\",\"min\":{}}}", n)),
+                    ValidatorKind::MaxLength(n) => schema_json.push_str(&format!("{{\"kind\":\"max_length\",\"max\":{}}}", n)),
+                    ValidatorKind::Pattern(p) => schema_json.push_str(&format!("{{\"kind\":\"pattern\",\"pattern\":\"{}\"}}", p)),
+                    ValidatorKind::Email => schema_json.push_str("{\"kind\":\"email\"}"),
+                    ValidatorKind::Url => schema_json.push_str("{\"kind\":\"url\"}"),
+                    ValidatorKind::Min(n) => schema_json.push_str(&format!("{{\"kind\":\"min\",\"min\":{}}}", n)),
+                    ValidatorKind::Max(n) => schema_json.push_str(&format!("{{\"kind\":\"max\",\"max\":{}}}", n)),
+                    ValidatorKind::Custom(name) => schema_json.push_str(&format!("{{\"kind\":\"custom\",\"fn\":\"{}\"}}", name)),
+                }
+            }
+            schema_json.push_str("]}");
+        }
+        schema_json.push_str("]}");
+
+        // Store form name and schema in memory
+        let name_offset = self.store_string(&form.name);
+        let name_len = form.name.len();
+        let schema_offset = self.store_string(&schema_json);
+        let schema_len = schema_json.len();
+
+        // Emit registration function
+        let fn_name = format!("{}_init", form.name);
+        self.emit(&format!("(func ${fn_name} (export \"{fn_name}\") (param $root i32)"));
+        self.indent += 1;
+
+        // Register form with runtime
+        self.line(&format!(
+            "(call $form_register (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))",
+            name_offset, name_len, schema_offset, schema_len
+        ));
+
+        self.indent -= 1;
+        self.line(")");
+
+        // Generate methods
+        for method in &form.methods {
+            self.generate_function(method);
+        }
+    }
+
+    fn generate_channel(&mut self, ch: &ChannelDef) {
+        self.line(&format!(";; === Channel: {} ===", ch.name));
+
+        // Store channel name in linear memory
+        let name_offset = self.store_string(&ch.name);
+        let name_len = ch.name.len();
+
+        // Store URL — extract string from the Expr
+        let url_str = match &ch.url {
+            Expr::StringLit(s) => s.clone(),
+            _ => "/ws".to_string(),
+        };
+        let url_offset = self.store_string(&url_str);
+        let url_len = url_str.len();
+
+        // Generate channel registration function
+        self.line(&format!("(func $__channel_register_{} (export \"__channel_register_{}\")", ch.name, ch.name));
+        self.line(&format!("  i32.const {}  ;; name ptr", name_offset));
+        self.line(&format!("  i32.const {}  ;; name len", name_len));
+        self.line(&format!("  i32.const {}  ;; url ptr", url_offset));
+        self.line(&format!("  i32.const {}  ;; url len", url_len));
+        self.line("  call $channel_connect");
+
+        // Set reconnect flag
+        if !ch.reconnect {
+            self.line(&format!("  i32.const {}  ;; name ptr", name_offset));
+            self.line(&format!("  i32.const {}  ;; name len", name_len));
+            self.line("  i32.const 0  ;; reconnect disabled");
+            self.line("  call $channel_set_reconnect");
+        }
+
+        self.line(")");
+
+        // Generate handler methods
+        if let Some(ref handler) = ch.on_message {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = ch.on_connect {
+            self.generate_function(handler);
+        }
+        if let Some(ref handler) = ch.on_disconnect {
+            self.generate_function(handler);
+        }
+        for method in &ch.methods {
+            self.generate_function(method);
         }
     }
 
@@ -1067,6 +1236,56 @@ impl WasmCodegen {
             }
             self.indent -= 1;
             self.line(")");
+        }
+
+        // Selectors — derived values that depend on signals
+        for selector in &store.selectors {
+            self.line("");
+            self.emit(&format!("(func ${store_name}_selector_{} (export \"{store_name}_selector_{}\")",
+                selector.name, selector.name));
+            self.indent += 1;
+            self.line(&format!(";; selector: {} — derived from store signals", selector.name));
+            self.generate_expr(&selector.body);
+            self.indent -= 1;
+            self.line(")");
+        }
+
+        // Atomic signal accessors — generate lock-free get/set/CAS wrappers
+        for sig in &store.signals {
+            if sig.atomic {
+                self.line("");
+                self.line(&format!(";; atomic signal: {}.{}", store_name, sig.name));
+
+                // Atomic getter
+                self.emit(&format!("(func ${store_name}_atomic_get_{} (export \"{store_name}_atomic_get_{}\") (result i32)",
+                    sig.name, sig.name));
+                self.indent += 1;
+                self.line(&format!("global.get ${store_name}_{}", sig.name));
+                self.line("call $state_atomic_get");
+                self.indent -= 1;
+                self.line(")");
+
+                // Atomic setter
+                self.emit(&format!("(func ${store_name}_atomic_set_{} (export \"{store_name}_atomic_set_{}\") (param $value i32)",
+                    sig.name, sig.name));
+                self.indent += 1;
+                self.line(&format!("global.get ${store_name}_{}", sig.name));
+                self.line("local.get $value");
+                self.line("call $state_atomic_set");
+                self.indent -= 1;
+                self.line(")");
+
+                // Atomic compare-and-swap
+                self.emit(&format!("(func ${store_name}_atomic_cas_{} (export \"{store_name}_atomic_cas_{}\") (param $expected i32) (param $desired i32) (result i32)",
+                    sig.name, sig.name));
+                self.indent += 1;
+                self.line(&format!("global.get ${store_name}_{}", sig.name));
+                self.line("local.get $expected");
+                self.line("local.get $desired");
+                self.line("call $state_atomic_cas");
+                self.indent -= 1;
+                self.line(")");
+            }
         }
     }
 
@@ -1846,10 +2065,12 @@ impl WasmCodegen {
                     self.line("call $contract_validate");
                 }
             }
-            Expr::Spawn { body } => {
+            Expr::Spawn { body, .. } => {
                 self.line(";; spawn — launch task on Web Worker");
-                // The body expression should resolve to a function index
-                self.generate_expr(body);
+                // Generate block statements; the last expression provides a function index
+                for stmt in &body.stmts {
+                    self.generate_stmt(stmt);
+                }
                 self.line("call $worker_spawn");
             }
             Expr::Channel { ty } => {
@@ -1872,16 +2093,16 @@ impl WasmCodegen {
                 self.line("i32.const 0 ;; callback index placeholder");
                 self.line("call $worker_channelRecv");
             }
-            Expr::Parallel { exprs } => {
+            Expr::Parallel { tasks, .. } => {
                 self.line(";; parallel — run expressions concurrently");
                 // Store function indices in linear memory for the runtime
-                let count = exprs.len() as u32;
+                let count = tasks.len() as u32;
                 let array_label = self.next_label();
                 self.line(&format!("(local $parallel_arr_{} i32)", array_label));
                 self.line(&format!("i32.const {}", count * 4));
                 self.line("call $alloc");
                 self.line(&format!("local.set $parallel_arr_{}", array_label));
-                for (i, expr) in exprs.iter().enumerate() {
+                for (i, expr) in tasks.iter().enumerate() {
                     self.line(&format!("local.get $parallel_arr_{}", array_label));
                     self.generate_expr(expr);
                     self.line(&format!("i32.store offset={}", i * 4));
@@ -2112,6 +2333,11 @@ impl WasmCodegen {
                 self.line("i32.const 4");
                 self.line("i32.add");
                 self.line("i32.load");
+            }
+            Expr::DynamicImport { path, .. } => {
+                self.line(";; dynamic import — triggers code split and async chunk loading");
+                self.generate_expr(path);
+                self.line("call $load_chunk");
             }
             _ => {
                 self.line(";; TODO: codegen for expr");
@@ -3042,6 +3268,7 @@ mod closure_codegen_tests {
                     span: span(),
                 },
                 is_pub: true,
+                must_use: false,
                 span: span(),
             })],
         };

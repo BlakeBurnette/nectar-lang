@@ -464,6 +464,16 @@ struct TypeChecker {
     /// contracts (vs plain structs). Contracts generate runtime validators
     /// and content hashes; field access checking reuses the `structs` map.
     contracts: std::collections::HashSet<String>,
+    warnings: Vec<TypeWarning>,
+    /// Names of functions marked `must_use` — their return values must not be
+    /// silently discarded.
+    must_use_fns: std::collections::HashSet<String>,
+}
+
+#[derive(Debug)]
+struct TypeWarning {
+    message: String,
+    span: Span,
 }
 
 impl TypeChecker {
@@ -478,6 +488,8 @@ impl TypeChecker {
             type_params_in_scope: std::collections::HashSet::new(),
             traits: HashMap::new(),
             contracts: std::collections::HashSet::new(),
+            warnings: Vec::new(),
+            must_use_fns: std::collections::HashSet::new(),
         }
     }
 
@@ -615,6 +627,9 @@ impl TypeChecker {
                         ret: Box::new(ret_ty),
                     };
                     self.fn_sigs.insert(f.name.clone(), fn_ty);
+                    if f.must_use {
+                        self.must_use_fns.insert(f.name.clone());
+                    }
                     self.type_params_in_scope = prev;
                 }
                 Item::Impl(imp) => {
@@ -823,6 +838,17 @@ impl TypeChecker {
                     }
                 }
                 Item::App(_) => { /* app type checking TODO */ }
+                Item::Form(form) => {
+                    // Type check form methods
+                    for method in &form.methods {
+                        let prev = self.type_params_in_scope.clone();
+                        for tp in &method.type_params {
+                            self.type_params_in_scope.insert(tp.clone());
+                        }
+                        self.check_function(method, &mut env);
+                        self.type_params_in_scope = prev;
+                    }
+                }
                 Item::Page(page) => {
                     // Type check page like a component
                     for method in &page.methods {
@@ -834,6 +860,7 @@ impl TypeChecker {
                         self.type_params_in_scope = prev;
                     }
                 }
+                Item::Channel(_) => { /* channel type checking TODO */ }
             }
         }
 
@@ -865,6 +892,106 @@ impl TypeChecker {
                     }
                 }
             }
+        }
+
+        // Race condition detection: warn when multiple components mutate the
+        // same store without using atomic signals.
+        self.check_store_mutation_races(program);
+    }
+
+    /// Walk components and track which stores each one mutates.
+    /// If two or more components mutate the same store and neither uses atomic
+    /// signals, emit a warning about potential race conditions.
+    fn check_store_mutation_races(&mut self, program: &Program) {
+        use std::collections::HashMap as HM;
+        let mut store_mutators: HM<String, Vec<String>> = HM::new();
+
+        // Collect store names that have atomic signals
+        let mut stores_with_atomics: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for item in &program.items {
+            if let Item::Store(s) = item {
+                if s.signals.iter().any(|sig| sig.atomic) {
+                    stores_with_atomics.insert(s.name.clone());
+                }
+            }
+        }
+
+        for item in &program.items {
+            if let Item::Component(c) = item {
+                // Walk component methods looking for store mutation patterns
+                for method in &c.methods {
+                    self.collect_store_mutations(&method.body, &c.name, &mut store_mutators);
+                }
+            }
+        }
+
+        // Check for conflicting mutations
+        for (store_name, mutators) in &store_mutators {
+            if mutators.len() > 1 && !stores_with_atomics.contains(store_name) {
+                let comp_list = mutators.join("` and `");
+                self.error(
+                    format!(
+                        "warning: components `{}` both mutate store `{}` — consider using `atomic` signals to prevent race conditions",
+                        comp_list, store_name,
+                    ),
+                    Span::new(0, 0, 0, 0),
+                );
+            }
+        }
+    }
+
+    /// Walk a block looking for store mutation patterns (e.g. `StoreName.action(...)`)
+    fn collect_store_mutations(
+        &self,
+        block: &Block,
+        component_name: &str,
+        store_mutators: &mut std::collections::HashMap<String, Vec<String>>,
+    ) {
+        for stmt in &block.stmts {
+            if let Stmt::Expr(expr) = stmt {
+                self.collect_store_mutations_in_expr(expr, component_name, store_mutators);
+            }
+        }
+    }
+
+    fn collect_store_mutations_in_expr(
+        &self,
+        expr: &Expr,
+        component_name: &str,
+        store_mutators: &mut std::collections::HashMap<String, Vec<String>>,
+    ) {
+        match expr {
+            Expr::MethodCall { object, method, args, .. } => {
+                // Pattern: StoreName.dispatch(...) or StoreName.some_action(...)
+                if let Expr::Ident(store_name) = object.as_ref() {
+                    // Heuristic: if calling a method on a PascalCase name, assume it's a store mutation
+                    if store_name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        let mutators = store_mutators.entry(store_name.clone()).or_default();
+                        if !mutators.contains(&component_name.to_string()) {
+                            mutators.push(component_name.to_string());
+                        }
+                    }
+                }
+                self.collect_store_mutations_in_expr(object, component_name, store_mutators);
+                for arg in args {
+                    self.collect_store_mutations_in_expr(arg, component_name, store_mutators);
+                }
+            }
+            Expr::Assign { target, value } => {
+                // Pattern: StoreName.field = value
+                if let Expr::FieldAccess { object, .. } = target.as_ref() {
+                    if let Expr::Ident(store_name) = object.as_ref() {
+                        if store_name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                            let mutators = store_mutators.entry(store_name.clone()).or_default();
+                            if !mutators.contains(&component_name.to_string()) {
+                                mutators.push(component_name.to_string());
+                            }
+                        }
+                    }
+                }
+                self.collect_store_mutations_in_expr(value, component_name, store_mutators);
+            }
+            _ => {}
         }
     }
 
@@ -1107,7 +1234,51 @@ impl TypeChecker {
                 env.insert(name.clone(), final_ty);
                 Ty::Unit
             }
-            Stmt::Expr(expr) => self.infer_expr(expr, env),
+            Stmt::Expr(expr) => {
+                // Check if this is a function call whose return value is being
+                // discarded — applies to must_use functions and functions
+                // returning Result<T,E> or Option<T>.
+                let ty = self.infer_expr(expr, env);
+                let resolved = self.resolve(&ty);
+
+                // Determine the callee name (if this is a direct function call)
+                let callee_name = match expr {
+                    Expr::FnCall { callee, .. } => match callee.as_ref() {
+                        Expr::Ident(name) => Some(name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
+                // Warn if discarding Result<T,E>
+                if matches!(resolved, Ty::Result_ { .. }) {
+                    self.error(
+                        "unused Result value — must be handled with match, unwrap, or let binding".to_string(),
+                        span,
+                    );
+                }
+                // Warn if discarding Option<T>
+                else if matches!(resolved, Ty::Option_(_)) {
+                    self.error(
+                        "unused Option value — must be handled with match, unwrap, or let binding".to_string(),
+                        span,
+                    );
+                }
+                // Warn if discarding return value from a must_use function
+                else if let Some(name) = callee_name {
+                    if self.must_use_fns.contains(&name) {
+                        self.error(
+                            format!(
+                                "return value of `must_use` function `{}` must not be discarded",
+                                name,
+                            ),
+                            span,
+                        );
+                    }
+                }
+
+                ty
+            }
             Stmt::Return(maybe_expr) => {
                 if let Some(expr) = maybe_expr {
                     self.infer_expr(expr, env)
@@ -1617,8 +1788,8 @@ impl TypeChecker {
                 self.infer_expr(fallback, env);
                 self.infer_expr(body, env)
             }
-            Expr::Spawn { body } => {
-                self.infer_expr(body, env);
+            Expr::Spawn { body, .. } => {
+                self.infer_block(body, env);
                 Ty::Unit
             }
             Expr::Channel { .. } => {
@@ -1633,8 +1804,8 @@ impl TypeChecker {
                 self.infer_expr(channel, env);
                 self.fresh_var()
             }
-            Expr::Parallel { exprs } => {
-                for expr in exprs {
+            Expr::Parallel { tasks, .. } => {
+                for expr in tasks {
                     self.infer_expr(expr, env);
                 }
                 self.fresh_var()
@@ -1690,6 +1861,12 @@ impl TypeChecker {
                         Ty::Error
                     }
                 }
+            }
+
+            Expr::DynamicImport { path, .. } => {
+                self.infer_expr(path, env);
+                // Dynamic imports return a promise-like async module handle
+                Ty::I32
             }
         }
     }
@@ -2082,6 +2259,7 @@ mod tests {
                 ownership: Ownership::Owned,
             }]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2107,6 +2285,7 @@ mod tests {
                 ownership: Ownership::Owned,
             }]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2131,6 +2310,7 @@ mod tests {
                 right: Box::new(Expr::Integer(1)),
             })]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2161,6 +2341,7 @@ mod tests {
                 right: Box::new(Expr::Integer(2)),
             })]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2196,6 +2377,7 @@ mod tests {
                 right: Box::new(Expr::Ident("b".into())),
             })]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2223,6 +2405,7 @@ mod tests {
             trait_bounds: vec![],
             body: block(vec![Stmt::Expr(Expr::Integer(42))]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2283,6 +2466,7 @@ mod tests {
                     }),
                 ]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
         ]);
@@ -2342,6 +2526,7 @@ mod tests {
                     }),
                 ]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
         ]);
@@ -2388,6 +2573,7 @@ mod tests {
                 },
             ]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2427,6 +2613,7 @@ mod tests {
                 },
             ]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2467,6 +2654,7 @@ mod tests {
                 },
             ]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })]);
 
@@ -2497,6 +2685,7 @@ mod tests {
                 ty: None,
                 mutable: true,
                 secret: false,
+                atomic: false,
                 initializer: Expr::Integer(0),
                 ownership: Ownership::Owned,
             }],
@@ -2512,6 +2701,8 @@ mod tests {
             gestures: vec![],
             skeleton: None,
             error_boundary: None,
+            chunk: None,
+            on_destroy: None,
             span: span(),
         })]);
 
@@ -2548,6 +2739,7 @@ mod tests {
                     right: Box::new(Expr::Ident("b".into())),
                 })]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
             Item::Function(Function {
@@ -2562,6 +2754,7 @@ mod tests {
                     args: vec![Expr::Integer(1)], // missing second arg
                 })]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
         ]);
@@ -2590,6 +2783,7 @@ mod tests {
                 trait_bounds: vec![],
                 body: block(vec![Stmt::Expr(Expr::Ident("name".into()))]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
             Item::Function(Function {
@@ -2604,6 +2798,7 @@ mod tests {
                     args: vec![Expr::Integer(42)], // wrong type
                 })]),
                 is_pub: false,
+                must_use: false,
                 span: span(),
             }),
         ]);
@@ -2650,6 +2845,7 @@ mod iterator_tests {
             trait_bounds: vec![],
             body: block(body_stmts),
             is_pub: false,
+            must_use: false,
             span: span(),
         })
     }
@@ -2843,6 +3039,7 @@ mod closure_tests {
                 trait_bounds: vec![],
                 body: Block { stmts, span: span() },
                 is_pub: true,
+                must_use: false,
                 span: span(),
             })],
         }

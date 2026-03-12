@@ -26,8 +26,14 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | Security | Manual / opt-in | `dangerouslySetInnerHTML` exists | XSS impossible, `secret` types, capability permissions |
 | Mobile/PWA | Library (Workbox, etc.) | Library | First-class (`app`, `offline`, `gesture`, `haptic`) |
 | SEO/AAIO | N/A | Requires Next.js + manual setup | Built-in (`page`, `meta`, auto sitemap/JSON-LD) |
+| Forms | Manual | Library (Formik, RHF) | First-class (`form`, `field`, built-in validation) |
+| Real-time | Library (Socket.io) | Library | First-class (`channel`, auto-reconnect, typed messages) |
+| Concurrency | Manual Web Workers | N/A | `spawn` and `parallel` — compiler handles threading |
+| Error handling | Optional (try/catch) | Optional | Exhaustive — `must_use`, Result/Option mandatory handling |
+| Memory safety | Manual cleanup | Manual | Compiler-detected leaks, ownership-based lifecycle |
+| Bundle size | N/A | 100KB+ min (React+deps) | WASM binary, code splitting via `chunk` keyword |
+| State races | Possible | Possible | Compiler-detected, `atomic` signals for safe shared state |
 | Supply chain | npm (1000s of deps) | npm (1000s of deps) | Zero JS dependencies — flat WASM binary |
-| Bundle size | N/A | 40-150 KB runtime | ~0 KB runtime overhead |
 
 Nectar was designed from the ground up with these principles:
 
@@ -757,6 +763,161 @@ AI systems (ChatGPT, Perplexity, Claude, Google SGE) extract answers from web co
 - **Clean DOM**: No framework wrapper divs -- WASM renders minimal, semantic markup
 - **Pre-rendered content**: AI crawlers see full content without executing JavaScript
 
+### Declarative Forms
+
+Forms are 30-50% of most application code. In React, a single form with validation requires useState, onChange handlers, onBlur tracking, error state, dirty checking, and submit handling — often 50-100 lines before you've done anything useful.
+
+Nectar's `form` keyword makes forms a language construct:
+
+```nectar
+form ContactForm {
+    field name: String {
+        label: "Full Name",
+        required,
+        min_length: 2,
+    }
+
+    field email: String {
+        label: "Email",
+        required,
+        email,
+    }
+
+    fn on_submit(&self) {
+        let response = fetch("/api/contact");
+    }
+}
+```
+
+**Built-in validators:** `required`, `min_length`, `max_length`, `pattern`, `email`, `url`, `min`, `max`, and custom validator functions.
+
+Validation, dirty tracking, touched state, error display, and submit handling are all automatic. No library needed.
+
+### Real-time Channels
+
+WebSocket connections in JavaScript require manual reconnection logic, heartbeat monitoring, message parsing, and error handling. Libraries like Socket.io add 50KB+ to your bundle.
+
+Nectar's `channel` keyword provides type-safe real-time connections:
+
+```nectar
+channel Chat -> ChatMessage {
+    url: "wss://api.example.com/ws/chat",
+    reconnect: true,
+    heartbeat: 30000,
+
+    on_message fn(msg: ChatMessage) {
+        // Already typed via contract binding
+    }
+}
+```
+
+Automatic reconnection with exponential backoff (capped at 30s), heartbeat monitoring, and type-safe messages via contract binding. Zero configuration.
+
+### Transparent Concurrency
+
+Long computations freeze the UI in JavaScript. Web Workers exist but require separate files, manual message passing, and structured clone limitations.
+
+Nectar's `spawn` keyword runs blocks off the main thread automatically:
+
+```nectar
+let result = spawn {
+    let data = load_raw_data();
+    let cleaned = clean(data);
+    analyze(cleaned)
+};
+// UI stays responsive — computation ran in a Web Worker
+```
+
+`parallel` runs multiple operations concurrently:
+
+```nectar
+let results = parallel {
+    fetch("/api/users"),
+    fetch("/api/orders"),
+    fetch("/api/inventory"),
+};
+```
+
+The compiler handles serialization, Worker creation, and data transfer. No boilerplate.
+
+### Exhaustive Error Handling
+
+JavaScript's error handling is optional. Unhandled promise rejections silently break applications. `try/catch` is opt-in and easy to forget.
+
+Nectar enforces error handling at compile time:
+
+```nectar
+must_use fn fetch_user(id: String) -> Result<String, String> {
+    // ...
+}
+
+// COMPILE ERROR: return value of must_use function must be used
+fetch_user("123");
+
+// COMPILE ERROR: non-exhaustive match — missing Err arm
+match fetch_user("123") {
+    Ok(user) => { /* ... */ },
+}
+
+// Correct — both arms handled
+match fetch_user("123") {
+    Ok(user) => { /* use it */ },
+    Err(e) => { /* handle it */ },
+}
+```
+
+- **`must_use` functions**: Compiler error if the return value is discarded
+- **Exhaustive Result/Option matching**: Both `Ok`/`Err` (or `Some`/`None`) arms required
+- **No silent failures**: Every error path must be explicitly handled
+
+### Bundle Size & Code Splitting
+
+A minimal React app ships 100KB+ gzipped before you write a line of code. Nectar compiles to a flat WASM binary with zero JavaScript dependencies.
+
+The `chunk` keyword enables manual code-split boundaries:
+
+```nectar
+component HeavyChart() {
+    chunk "analytics"
+
+    render {
+        <div class="chart">
+            // Only loaded when this component is needed
+        </div>
+    }
+}
+```
+
+Dynamic imports trigger automatic chunk loading:
+
+```nectar
+let module = import("./heavy-module");
+```
+
+Combined with tree shaking and dead code elimination, Nectar produces minimal binaries.
+
+### Race-Free State & Memory Safety
+
+**Atomic signals** prevent race conditions when multiple components share state:
+
+```nectar
+store AppStore {
+    signal atomic counter: i32 = 0;
+    selector doubled: self.counter * 2;
+}
+```
+
+The compiler detects when multiple components mutate the same store without `atomic` signals and warns at build time.
+
+**Memory leak detection** catches common resource leaks:
+
+```
+warning[resource_leak]: component uses addEventListener but has no on_destroy — potential memory leak
+  --> src/components/tracker.nectar:15:9
+```
+
+The compiler tracks event listeners, intervals, timeouts, and subscriptions, warning when cleanup handlers are missing.
+
 ### String Interpolation
 
 ```nectar
@@ -1071,6 +1232,7 @@ nectar build app.nectar --no-check         # Skip borrow checker and type checke
 | `-O`, `--optimize` | Optimization level: `0` (none), `1` (const fold + DCE), `2` (all passes) |
 | `--critical-css` | Extract and inline critical CSS for above-the-fold content |
 | `--sourcemap` | Generate source maps for debugging |
+| `--split-chunks` | Enable code splitting at `chunk` boundaries for lazy loading |
 
 ### `nectar test`
 
@@ -1307,6 +1469,10 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`security.nectar`](examples/security.nectar) | Security features -- `secret` types, `permissions` blocks, capability enforcement |
 | [`pwa-app.nectar`](examples/pwa-app.nectar) | Progressive Web App -- `app` manifest, offline caching, gestures, hardware access |
 | [`seo.nectar`](examples/seo.nectar) | SEO & AAIO -- `page` keyword, `meta` blocks, structured data, auto sitemap, semantic HTML |
+| [`forms.nectar`](examples/forms.nectar) | Declarative forms -- `form` keyword, field validation, multi-step |
+| [`realtime.nectar`](examples/realtime.nectar) | Real-time -- `channel` keyword, WebSocket, typed messages |
+| [`concurrency.nectar`](examples/concurrency.nectar) | Concurrency -- `spawn`, `parallel`, off-main-thread computation |
+| [`error-handling.nectar`](examples/error-handling.nectar) | Error handling -- `must_use`, exhaustive Result/Option matching |
 
 Compile any example:
 
@@ -1365,6 +1531,10 @@ nectar-lang/
     contracts.nectar
     security.nectar
     pwa-app.nectar
+    forms.nectar
+    realtime.nectar
+    concurrency.nectar
+    error-handling.nectar
     component-tests.nectar
     agent-tests.nectar
 ```

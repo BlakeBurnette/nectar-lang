@@ -43,6 +43,10 @@ pub enum Item {
     App(AppDef),
     /// Page definition — a component with SEO metadata
     Page(PageDef),
+    /// Declarative form definition
+    Form(FormDef),
+    /// Channel definition — real-time WebSocket connection with handlers
+    Channel(ChannelDef),
 }
 
 /// Contract definition — an API boundary type that generates:
@@ -140,8 +144,90 @@ pub struct StructuredDataDef {
     pub span: Span,
 }
 
-/// Gesture definition inside a component
+/// Declarative form definition
+#[derive(Debug, Clone)]
+pub struct FormDef {
+    pub name: String,
+    pub fields: Vec<FormFieldDef>,
+    pub on_submit: Option<String>,  // handler function name
+    pub steps: Vec<FormStep>,       // for multi-step forms, empty if single-step
+    pub methods: Vec<Function>,
+    pub styles: Vec<StyleBlock>,
+    pub render: Option<RenderBlock>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FormFieldDef {
+    pub name: String,
+    pub ty: Type,
+    pub validators: Vec<ValidatorDef>,
+    pub label: Option<Expr>,
+    pub placeholder: Option<Expr>,
+    pub default_value: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorDef {
+    pub kind: ValidatorKind,
+    pub message: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ValidatorKind {
+    Required,
+    MinLength(usize),
+    MaxLength(usize),
+    Pattern(String),
+    Email,
+    Url,
+    Min(i64),
+    Max(i64),
+    Custom(String),  // function name
+}
+
+#[derive(Debug, Clone)]
+pub struct FormStep {
+    pub name: String,
+    pub fields: Vec<String>,  // field names in this step
+    pub span: Span,
+}
+
+/// Channel definition — real-time WebSocket connection with event handlers
+///
+/// ```nectar
+/// channel Chat -> ChatMessage {
+///     url: "/ws/chat",
+///     reconnect: true,
+///     heartbeat: 30000,
+///
+///     on_message fn(msg) { ... }
+///     on_connect fn() { ... }
+///     on_disconnect fn() { ... }
+///
+///     fn send_message(text: String) { ... }
+/// }
+/// ```
 #[derive(Debug)]
+pub struct ChannelDef {
+    pub name: String,
+    pub url: Expr,
+    pub contract: Option<String>,
+    pub on_message: Option<Function>,
+    pub on_connect: Option<Function>,
+    pub on_disconnect: Option<Function>,
+    pub reconnect: bool,
+    pub heartbeat_interval: Option<u64>,
+    pub methods: Vec<Function>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Gesture definition inside a component
+#[derive(Debug, Clone)]
 pub struct GestureDef {
     pub gesture_type: String,   // swipe_left, swipe_right, long_press, pinch, etc.
     pub target: Option<String>, // on:element_name, or None for the component root
@@ -158,7 +244,7 @@ pub struct TestDef {
 }
 
 /// Trait definition — Rust-style interface with optional default method bodies
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraitDef {
     pub name: String,
     pub type_params: Vec<String>,
@@ -167,7 +253,7 @@ pub struct TraitDef {
 }
 
 /// A method declaration inside a trait (may have a default body)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraitMethod {
     pub name: String,
     pub params: Vec<Param>,
@@ -184,7 +270,7 @@ pub struct TraitBound {
 }
 
 /// Function definition
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
     pub lifetimes: Vec<String>,
@@ -194,6 +280,7 @@ pub struct Function {
     pub trait_bounds: Vec<TraitBound>,
     pub body: Block,
     pub is_pub: bool,
+    pub must_use: bool,
     pub span: Span,
 }
 
@@ -213,11 +300,16 @@ pub struct Component {
     pub gestures: Vec<GestureDef>,
     pub skeleton: Option<SkeletonDef>,
     pub error_boundary: Option<ErrorBoundary>,
+    /// Code-split chunk name — `chunk "dashboard"` tags this component
+    /// so the bundler emits it into a separate chunk.
+    pub chunk: Option<String>,
+    /// Lifecycle cleanup callback — `fn on_destroy` method reference
+    pub on_destroy: Option<Function>,
     pub span: Span,
 }
 
 /// Permission declaration inside a component
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PermissionsDef {
     pub network: Vec<String>,      // allowed URL patterns
     pub storage: Vec<String>,      // allowed storage keys
@@ -235,14 +327,14 @@ pub struct PermissionsDef {
 ///     </div>
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SkeletonDef {
     pub body: RenderBlock,
     pub span: Span,
 }
 
 /// Error boundary — catches render errors and shows a fallback UI
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ErrorBoundary {
     pub fallback: RenderBlock,
     pub body: RenderBlock,
@@ -250,7 +342,7 @@ pub struct ErrorBoundary {
 }
 
 /// Component property (immutable by default)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Prop {
     pub name: String,
     pub ty: Type,
@@ -258,12 +350,14 @@ pub struct Prop {
 }
 
 /// Component state field (reactive signal)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StateField {
     pub name: String,
     pub ty: Option<Type>,
     pub mutable: bool,
     pub secret: bool,
+    /// Whether this signal uses atomic operations for race-free concurrent access
+    pub atomic: bool,
     pub initializer: Expr,
     pub ownership: Ownership,
 }
@@ -276,14 +370,14 @@ pub enum Ownership {
 }
 
 /// Render block — produces a template tree
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenderBlock {
     pub body: TemplateNode,
     pub span: Span,
 }
 
 /// Template nodes — the JSX-like part
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TemplateNode {
     Element(Element),
     TextLiteral(String),
@@ -293,7 +387,7 @@ pub enum TemplateNode {
     Link { to: Expr, children: Vec<TemplateNode> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Element {
     pub tag: String,
     pub attributes: Vec<Attribute>,
@@ -301,7 +395,7 @@ pub struct Element {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Attribute {
     Static { name: String, value: String },
     Dynamic { name: String, value: Expr },
@@ -394,7 +488,17 @@ pub struct StoreDef {
     pub actions: Vec<ActionDef>,
     pub computed: Vec<ComputedDef>,
     pub effects: Vec<EffectDef>,
+    pub selectors: Vec<SelectorDef>,
     pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Selector — a derived value that depends on one or more signals/stores
+#[derive(Debug)]
+pub struct SelectorDef {
+    pub name: String,
+    pub deps: Vec<String>,     // store/signal names this derives from
+    pub body: Expr,            // computation expression
     pub span: Span,
 }
 
@@ -515,7 +619,7 @@ pub struct LazyComponentDef {
 }
 
 /// Scoped CSS style block within a component
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StyleBlock {
     pub selector: String,
     pub properties: Vec<(String, String)>,
@@ -523,7 +627,7 @@ pub struct StyleBlock {
 }
 
 /// Transition definition — CSS transition on a property
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TransitionDef {
     pub property: String,
     pub duration: String,
@@ -594,7 +698,7 @@ pub enum Type {
 }
 
 /// Function/method parameter
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub ty: Type,
@@ -623,6 +727,7 @@ pub enum Stmt {
         name: String,
         ty: Option<Type>,
         secret: bool,
+        atomic: bool,
         value: Expr,
     },
     /// Destructuring let — `let (a, b) = expr;`, `let User { name, .. } = expr;`, etc.
@@ -759,11 +864,13 @@ pub enum Expr {
     Suspend { fallback: Box<Expr>, body: Box<Expr> },
 
     // Concurrency primitives
-    Spawn { body: Box<Expr> },
+    /// spawn { ... } — runs block in Web Worker
+    Spawn { body: Block, span: Span },
     Channel { ty: Option<Type> },
     Send { channel: Box<Expr>, value: Box<Expr> },
     Receive { channel: Box<Expr> },
-    Parallel { exprs: Vec<Expr> },
+    /// parallel { a, b, c } — runs multiple expressions concurrently
+    Parallel { tasks: Vec<Expr>, span: Span },
 
     // Error handling
     TryCatch {
@@ -787,6 +894,12 @@ pub enum Expr {
     /// `?` error propagation operator — `expr?`
     /// Unwraps Result<T,E> or Option<T>, propagating the error/None on failure.
     Try(Box<Expr>),
+
+    /// Dynamic import: `import("./module")` — triggers code split
+    DynamicImport {
+        path: Box<Expr>,
+        span: Span,
+    },
 }
 
 /// A segment in a format string expression.

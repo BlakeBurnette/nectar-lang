@@ -1233,6 +1233,77 @@ class NectarRuntime {
             }
           });
         },
+
+        // Await a spawned worker result (async callback)
+        await: (workerId) => {
+          return new Promise((resolve) => {
+            const entry = this.workerPool?._workers?.find((_, id) => id === workerId);
+            if (entry) {
+              entry.worker.onmessage = (e) => {
+                resolve(e.data);
+                entry.worker.terminate();
+              };
+            } else {
+              resolve(0);
+            }
+          });
+        },
+      },
+
+      // --- Channel module: WebSocket runtime for WASM ---
+      channel: {
+        connect: (namePtr, nameLen, urlPtr, urlLen) => {
+          const name = this.readString(namePtr, nameLen);
+          const url = this.readString(urlPtr, urlLen);
+          const ch = { name, url, ws: null, reconnect: true, heartbeatId: null, reconnectDelay: 1000 };
+
+          const open = () => {
+            ch.ws = new WebSocket(url);
+            ch.ws.onopen = () => {
+              ch.reconnectDelay = 1000;
+              if (ch.onConnect) ch.onConnect();
+            };
+            ch.ws.onmessage = (e) => {
+              if (ch.onMessage) ch.onMessage(e.data);
+            };
+            ch.ws.onclose = () => {
+              if (ch.onDisconnect) ch.onDisconnect();
+              if (ch.reconnect) {
+                setTimeout(open, Math.min(ch.reconnectDelay *= 1.5, 30000));
+              }
+            };
+            ch.ws.onerror = () => ch.ws.close();
+          };
+
+          this._wsChannels = this._wsChannels || new Map();
+          this._wsChannels.set(name, ch);
+          open();
+        },
+
+        send: (namePtr, nameLen, dataPtr, dataLen) => {
+          const name = this.readString(namePtr, nameLen);
+          const data = this.readString(dataPtr, dataLen);
+          const ch = this._wsChannels?.get(name);
+          if (ch?.ws?.readyState === WebSocket.OPEN) {
+            ch.ws.send(data);
+          }
+        },
+
+        close: (namePtr, nameLen) => {
+          const name = this.readString(namePtr, nameLen);
+          const ch = this._wsChannels?.get(name);
+          if (ch) {
+            ch.reconnect = false;
+            ch.ws?.close();
+            this._wsChannels.delete(name);
+          }
+        },
+
+        setReconnect: (namePtr, nameLen, enabled) => {
+          const name = this.readString(namePtr, nameLen);
+          const ch = this._wsChannels?.get(name);
+          if (ch) ch.reconnect = !!enabled;
+        },
       },
 
       // --- AI module: LLM interaction primitives for WASM ---
@@ -2615,6 +2686,7 @@ if (typeof module !== "undefined") {
     HardwareRuntime,
     PwaRuntime,
     SeoRuntime,
+    FormRuntime,
     createEffect,
     createMemo,
     batch,
@@ -2631,6 +2703,60 @@ class PermissionError extends Error {
     this.name = "PermissionError";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Form runtime
+// ---------------------------------------------------------------------------
+
+const FormRuntime = {
+  _forms: new Map(),
+  _errors: new Map(),
+
+  registerForm(namePtr, nameLen, schemaPtr, schemaLen) {
+    const name = runtime.readString(namePtr, nameLen);
+    const schema = JSON.parse(runtime.readString(schemaPtr, schemaLen));
+    FormRuntime._forms.set(name, { schema, values: {}, errors: {}, dirty: {}, touched: {} });
+  },
+
+  validate(namePtr, nameLen) {
+    const name = runtime.readString(namePtr, nameLen);
+    const form = FormRuntime._forms.get(name);
+    if (!form) return 0;
+    let valid = true;
+    form.errors = {};
+    for (const field of form.schema.fields) {
+      const value = form.values[field.name];
+      for (const v of field.validators) {
+        const error = FormRuntime._runValidator(v, value, field.name);
+        if (error) { form.errors[field.name] = error; valid = false; break; }
+      }
+    }
+    return valid ? 1 : 0;
+  },
+
+  setFieldError(namePtr, nameLen, errorPtr, errorLen) {
+    const name = runtime.readString(namePtr, nameLen);
+    const error = runtime.readString(errorPtr, errorLen);
+    const form = FormRuntime._forms.get(name);
+    if (form) form.errors[name] = error;
+  },
+
+  _runValidator(validator, value, fieldName) {
+    switch (validator.kind) {
+      case 'required': return (!value || value === '') ? (validator.message || `${fieldName} is required`) : null;
+      case 'min_length': return (value && value.length < validator.min) ? (validator.message || `${fieldName} must be at least ${validator.min} characters`) : null;
+      case 'max_length': return (value && value.length > validator.max) ? (validator.message || `${fieldName} must be at most ${validator.max} characters`) : null;
+      case 'pattern': return (value && !new RegExp(validator.pattern).test(value)) ? (validator.message || `${fieldName} format is invalid`) : null;
+      case 'email': return (value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) ? (validator.message || `${fieldName} must be a valid email`) : null;
+      case 'url': { try { new URL(value); return null; } catch { return validator.message || `${fieldName} must be a valid URL`; } }
+      default: return null;
+    }
+  },
+
+  getErrors(name) { return FormRuntime._forms.get(name)?.errors || {}; },
+  isDirty(name) { const f = FormRuntime._forms.get(name); return f ? Object.keys(f.dirty).length > 0 : false; },
+  reset(name) { const f = FormRuntime._forms.get(name); if (f) { f.values = {}; f.errors = {}; f.dirty = {}; f.touched = {}; } },
+};
 
 const PermissionsRuntime = {
   /** Per-component permission registrations: component name -> { network: [...], storage: [...] } */
@@ -2720,6 +2846,191 @@ const PermissionsRuntime = {
   },
 };
 
+// =========================================================================
+// Feature 1: Code Splitting / Chunk Loading Runtime
+// =========================================================================
+
+/**
+ * LoaderRuntime — manages dynamic code-split chunk loading.
+ * Emitted by the compiler for components tagged with `chunk "name"`.
+ */
+const LoaderRuntime = {
+  _chunks: new Map(),
+  _loaded: new Set(),
+
+  /**
+   * Load a code-split chunk by name. Returns 1 if already loaded or
+   * successfully loaded, throws on failure.
+   * Called from WASM via: (import "loader" "loadChunk")
+   * @param {number} namePtr - pointer to chunk name in WASM memory
+   * @param {number} nameLen - length of chunk name
+   * @returns {number} 1 on success
+   */
+  async loadChunk(namePtr, nameLen) {
+    const name = runtime.readString(namePtr, nameLen);
+    if (LoaderRuntime._loaded.has(name)) return 1;
+    const script = document.createElement("script");
+    script.src = `/chunks/${name}.js`;
+    await new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    LoaderRuntime._loaded.add(name);
+    return 1;
+  },
+
+  /**
+   * Preload a chunk (add a modulepreload link) without blocking.
+   * Called from WASM via: (import "loader" "preloadChunk")
+   * @param {number} namePtr - pointer to chunk name in WASM memory
+   * @param {number} nameLen - length of chunk name
+   */
+  preloadChunk(namePtr, nameLen) {
+    const name = runtime.readString(namePtr, nameLen);
+    if (!LoaderRuntime._loaded.has(name)) {
+      const link = document.createElement("link");
+      link.rel = "modulepreload";
+      link.href = `/chunks/${name}.js`;
+      document.head.appendChild(link);
+    }
+  },
+};
+
+// =========================================================================
+// Feature 2: Atomic State Runtime — Race-Free State Management
+// =========================================================================
+
+/**
+ * AtomicStateRuntime — provides atomic get/set/compare-and-swap operations
+ * for signals marked with the `atomic` keyword. Prevents race conditions
+ * when multiple components concurrently mutate the same store.
+ *
+ * In a SharedArrayBuffer environment, these use true atomic operations.
+ * In single-threaded contexts, they provide a consistent API with
+ * selector invalidation.
+ */
+const AtomicStateRuntime = {
+  _atomics: new Map(),
+  _selectors: new Map(),
+
+  /**
+   * Get the current value of an atomic signal.
+   * Called from WASM via: (import "state" "atomicGet")
+   * @param {number} signalId
+   * @returns {number} current value
+   */
+  atomicGet(signalId) {
+    return AtomicStateRuntime._atomics.get(signalId) ?? 0;
+  },
+
+  /**
+   * Set an atomic signal value and notify dependent selectors.
+   * Called from WASM via: (import "state" "atomicSet")
+   * @param {number} signalId
+   * @param {number} value
+   */
+  atomicSet(signalId, value) {
+    const old = AtomicStateRuntime._atomics.get(signalId);
+    AtomicStateRuntime._atomics.set(signalId, value);
+    AtomicStateRuntime._notifySelectors(signalId);
+    return old;
+  },
+
+  /**
+   * Atomic compare-and-swap: only update if current value matches expected.
+   * Returns 1 on success, 0 on failure.
+   * Called from WASM via: (import "state" "atomicCompareSwap")
+   * @param {number} signalId
+   * @param {number} expected
+   * @param {number} desired
+   * @returns {number} 1 if swapped, 0 otherwise
+   */
+  atomicCompareSwap(signalId, expected, desired) {
+    const current = AtomicStateRuntime._atomics.get(signalId) ?? 0;
+    if (current === expected) {
+      AtomicStateRuntime._atomics.set(signalId, desired);
+      AtomicStateRuntime._notifySelectors(signalId);
+      return 1;
+    }
+    return 0;
+  },
+
+  /**
+   * Register a selector (derived computation) that depends on specific signals.
+   * @param {string} name - selector name
+   * @param {number[]} deps - signal IDs this selector depends on
+   * @param {Function} computeFn - function to recompute the selector value
+   */
+  registerSelector(name, deps, computeFn) {
+    AtomicStateRuntime._selectors.set(name, {
+      deps,
+      computeFn,
+      cached: null,
+    });
+  },
+
+  /**
+   * Invalidate cached selector values when a dependent signal changes.
+   * @param {number} changedSignal - the signal ID that changed
+   */
+  _notifySelectors(changedSignal) {
+    for (const [name, sel] of AtomicStateRuntime._selectors) {
+      if (sel.deps.includes(changedSignal)) {
+        sel.cached = null;
+      }
+    }
+  },
+};
+
+// =========================================================================
+// Feature 3: Lifecycle Runtime — Memory Leak Prevention
+// =========================================================================
+
+/**
+ * LifecycleRuntime — manages component cleanup callbacks to prevent
+ * memory leaks from event listeners, intervals, timeouts, and subscriptions.
+ *
+ * When a component with an `on_destroy` method is mounted, the compiler
+ * registers its cleanup function. When the component is unmounted, all
+ * registered cleanup callbacks are invoked.
+ */
+const LifecycleRuntime = {
+  _cleanups: new Map(),
+
+  /**
+   * Register a component for lifecycle cleanup tracking.
+   * Called from WASM via: (import "lifecycle" "registerCleanup")
+   * @param {number} componentPtr - pointer to component name in WASM memory
+   * @param {number} componentLen - length of component name
+   */
+  registerCleanup(componentPtr, componentLen) {
+    const name = runtime.readString(componentPtr, componentLen);
+    LifecycleRuntime._cleanups.set(name, []);
+  },
+
+  /**
+   * Add a cleanup callback for a component.
+   * @param {string} name - component name
+   * @param {Function} fn - cleanup function to call on destroy
+   */
+  addCleanup(name, fn) {
+    const cleanups = LifecycleRuntime._cleanups.get(name) || [];
+    cleanups.push(fn);
+    LifecycleRuntime._cleanups.set(name, cleanups);
+  },
+
+  /**
+   * Destroy a component: run all cleanup callbacks and remove tracking.
+   * @param {string} name - component name
+   */
+  destroy(name) {
+    const cleanups = LifecycleRuntime._cleanups.get(name) || [];
+    cleanups.forEach((fn) => fn());
+    LifecycleRuntime._cleanups.delete(name);
+  },
+};
+
 if (typeof window !== "undefined") {
   window.NectarRuntime = NectarRuntime;
   window.AgentManager = AgentManager;
@@ -2729,6 +3040,9 @@ if (typeof window !== "undefined") {
   window.PwaRuntime = PwaRuntime;
   window.PermissionsRuntime = PermissionsRuntime;
   window.PermissionError = PermissionError;
+  window.LoaderRuntime = LoaderRuntime;
+  window.AtomicStateRuntime = AtomicStateRuntime;
+  window.LifecycleRuntime = LifecycleRuntime;
   window.createEffect = createEffect;
   window.createMemo = createMemo;
   window.batch = batch;

@@ -247,6 +247,8 @@ mod tests {
                     gestures: vec![],
                     skeleton: None,
                     error_boundary: None,
+                    chunk: None,
+                    on_destroy: None,
                     span: dummy_span(),
                 }),
                 Item::LazyComponent(LazyComponentDef {
@@ -271,6 +273,8 @@ mod tests {
                         gestures: vec![],
                         skeleton: None,
                         error_boundary: None,
+                        chunk: None,
+                        on_destroy: None,
                         span: dummy_span(),
                     },
                     span: dummy_span(),

@@ -1,0 +1,94 @@
+// forms.nectar — Declarative form handling
+//
+// Nectar makes forms a language construct, not a library problem:
+// - `form` keyword with declarative field definitions
+// - Built-in validators: required, min_length, max_length, pattern, email, url
+// - Compile-time validation that all error states are handled
+// - Dirty tracking, touched state, and multi-step support built in
+//
+// No React Hook Form. No Formik. No VeeValidate. Just forms.
+
+form ContactForm {
+    field name: String {
+        label: "Full Name",
+        placeholder: "Jane Doe",
+        required,
+        min_length: 2,
+        max_length: 100,
+    }
+
+    field email: String {
+        label: "Email Address",
+        placeholder: "jane@example.com",
+        required,
+        email,
+    }
+
+    field message: String {
+        label: "Message",
+        placeholder: "How can we help?",
+        required,
+        min_length: 10,
+        max_length: 2000,
+    }
+
+    field website: String {
+        label: "Website",
+        placeholder: "https://example.com",
+        url,
+    }
+
+    fn on_submit(&self) {
+        let response = fetch("/api/contact");
+    }
+}
+
+// --- Multi-step registration ---
+
+form SignupForm {
+    field username: String {
+        label: "Username",
+        required,
+        min_length: 3,
+        max_length: 20,
+        pattern: "^[a-zA-Z0-9_]+$",
+    }
+
+    field password: String {
+        label: "Password",
+        required,
+        min_length: 8,
+    }
+
+    field company: String {
+        label: "Company Name",
+        required,
+    }
+
+    field team_size: String {
+        label: "Team Size",
+        required,
+    }
+
+    fn on_submit(&self) {
+        let response = fetch("/api/signup");
+    }
+}
+
+// --- Why this matters ---
+//
+// In React:
+//   const [name, setName] = useState('');
+//   const [nameError, setNameError] = useState('');
+//   const [touched, setTouched] = useState(false);
+//   const [dirty, setDirty] = useState(false);
+//   // ... repeat for every field
+//   // ... write validation logic manually
+//   // ... wire up onBlur, onChange, onSubmit
+//   // ... remember to prevent double-submit
+//   // ... handle server-side validation errors
+//   // 50-100 lines before you've done anything useful
+//
+// In Nectar:
+//   form ContactForm { field name: String { required } }
+//   // Done. Validation, dirty tracking, error states — all built in.

@@ -1272,6 +1272,7 @@ mod tests {
                 span: empty_span(),
             },
             is_pub: true,
+            must_use: false,
             span: empty_span(),
         }
     }

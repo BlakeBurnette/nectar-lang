@@ -650,8 +650,8 @@ impl Checker {
                 self.check_expr(fallback, span);
                 self.check_expr(body, span);
             }
-            Expr::Spawn { body } => {
-                self.check_expr(body, span);
+            Expr::Spawn { body, .. } => {
+                self.check_block(body);
             }
             Expr::Channel { .. } => {}
             Expr::Send { channel, value } => {
@@ -661,8 +661,8 @@ impl Checker {
             Expr::Receive { channel } => {
                 self.check_expr(channel, span);
             }
-            Expr::Parallel { exprs } => {
-                for expr in exprs {
+            Expr::Parallel { tasks, .. } => {
+                for expr in tasks {
                     self.check_expr(expr, span);
                 }
             }
@@ -694,6 +694,9 @@ impl Checker {
             }
             Expr::Try(inner) => {
                 self.check_expr(inner, span);
+            }
+            Expr::DynamicImport { path, .. } => {
+                self.check_expr(path, span);
             }
         }
     }
@@ -1054,6 +1057,7 @@ mod tests {
                     span: span(),
                 },
                 is_pub: true,
+                must_use: false,
                 span: span(),
             })],
         }
@@ -1403,6 +1407,7 @@ mod tests {
                     span: span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: span(),
             })],
         };
@@ -1442,6 +1447,7 @@ mod tests {
                     span: span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: span(),
             })],
         };
@@ -1490,6 +1496,7 @@ mod tests {
                     span: span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: span(),
             })],
         };

@@ -72,6 +72,12 @@ fn eliminate_in_item(item: &mut Item, stats: &mut DceStats) {
                 remove_unused_locals_in_block(&mut method.body, stats);
             }
         }
+        Item::Form(form) => {
+            for method in &mut form.methods {
+                eliminate_in_block(&mut method.body, stats);
+                remove_unused_locals_in_block(&mut method.body, stats);
+            }
+        }
         _ => {}
     }
 }
@@ -240,8 +246,11 @@ fn collect_references_in_expr(expr: &Expr, refs: &mut HashSet<String>) {
         }
         Expr::Borrow(e) | Expr::BorrowMut(e) | Expr::Await(e)
         | Expr::Stream { source: e } | Expr::Navigate { path: e }
-        | Expr::Spawn { body: e } | Expr::Receive { channel: e } => {
+        | Expr::Receive { channel: e } => {
             collect_references_in_expr(e, refs);
+        }
+        Expr::Spawn { body, .. } => {
+            for s in &body.stmts { collect_references_in_stmt(s, refs); }
         }
         Expr::Send { channel, value } => {
             collect_references_in_expr(channel, refs);
@@ -259,8 +268,8 @@ fn collect_references_in_expr(expr: &Expr, refs: &mut HashSet<String>) {
             collect_references_in_expr(url, refs);
             if let Some(opts) = options { collect_references_in_expr(opts, refs); }
         }
-        Expr::Parallel { exprs } => {
-            for e in exprs { collect_references_in_expr(e, refs); }
+        Expr::Parallel { tasks, .. } => {
+            for e in tasks { collect_references_in_expr(e, refs); }
         }
         Expr::PromptTemplate { interpolations, .. } => {
             for (_, e) in interpolations { collect_references_in_expr(e, refs); }
@@ -376,6 +385,7 @@ mod tests {
             trait_bounds: vec![],
             body: Block { stmts, span: dummy_span() },
             is_pub,
+            must_use: false,
             span: dummy_span(),
         })
     }

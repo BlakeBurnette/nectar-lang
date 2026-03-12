@@ -146,6 +146,38 @@ impl Formatter {
                 self.push_indent();
                 self.push("}\n");
             }
+            Item::Form(form) => {
+                self.push_indent();
+                if form.is_pub { self.push("pub "); }
+                self.push(&format!("form {} {{\n", form.name));
+                self.indent += 1;
+                for field in &form.fields {
+                    self.push_indent();
+                    self.push(&format!("field {}: {:?}\n", field.name, field.ty));
+                }
+                for method in &form.methods {
+                    self.format_function(method);
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
+            Item::Channel(ch) => {
+                self.push_indent();
+                if ch.is_pub { self.push("pub "); }
+                self.push(&format!("channel {}", ch.name));
+                if let Some(ref contract) = ch.contract {
+                    self.push(&format!(" -> {}", contract));
+                }
+                self.push(" {\n");
+                self.indent += 1;
+                for method in &ch.methods {
+                    self.format_function(method);
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.push("}\n");
+            }
             Item::Mod(m) => self.format_mod(m),
         }
     }
@@ -920,7 +952,10 @@ impl Formatter {
                     self.format_expr_inner(body, depth))
             }
 
-            Expr::Spawn { body } => format!("spawn {{ {} }}", self.format_expr_inner(body, depth)),
+            Expr::Spawn { body, .. } => {
+                let inner = self.format_block_to_string(body, depth);
+                format!("spawn {}", inner)
+            }
 
             Expr::Channel { ty } => {
                 if let Some(t) = ty {
@@ -940,9 +975,9 @@ impl Formatter {
                 format!("{}.receive()", self.format_expr_inner(channel, depth))
             }
 
-            Expr::Parallel { exprs } => {
+            Expr::Parallel { tasks, .. } => {
                 let parts: Vec<String> =
-                    exprs.iter().map(|e| self.format_expr_inner(e, depth)).collect();
+                    tasks.iter().map(|e| self.format_expr_inner(e, depth)).collect();
                 format!("parallel {{ {} }}", parts.join(", "))
             }
 
@@ -994,6 +1029,10 @@ impl Formatter {
 
             Expr::Try(inner) => {
                 format!("{}?", self.format_expr_inner(inner, depth))
+            }
+
+            Expr::DynamicImport { path, .. } => {
+                format!("import({})", self.format_expr_inner(path, depth))
             }
         }
     }
@@ -1320,6 +1359,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
                 lifetimes: vec![],
             })],
@@ -1381,6 +1421,8 @@ mod tests {
                 gestures: vec![],
                 skeleton: None,
                 error_boundary: None,
+                chunk: None,
+                on_destroy: None,
                 span: dummy_span(),
             })],
         };

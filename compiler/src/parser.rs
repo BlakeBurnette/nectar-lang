@@ -93,6 +93,8 @@ impl Parser {
                         | TokenKind::Contract
                         | TokenKind::App
                         | TokenKind::Page
+                        | TokenKind::Form
+                        | TokenKind::Channel
                         | TokenKind::Pub => break,
                         _ => { self.advance(); }
                     }
@@ -170,13 +172,20 @@ impl Parser {
             TokenKind::Contract => Ok(Item::Contract(self.parse_contract(is_pub)?)),
             TokenKind::App => Ok(Item::App(self.parse_app(is_pub)?)),
             TokenKind::Page => Ok(Item::Page(self.parse_page(is_pub)?)),
+            TokenKind::Form => Ok(Item::Form(self.parse_form(is_pub)?)),
+            TokenKind::Channel => Ok(Item::Channel(self.parse_channel(is_pub)?)),
+            TokenKind::MustUse => {
+                // must_use fn ...
+                self.advance();
+                Ok(Item::Function(self.parse_function(is_pub)?))
+            }
             TokenKind::Lazy => {
                 // lazy component Name { ... }
                 self.advance();
                 Ok(Item::LazyComponent(self.parse_lazy_component()?))
             }
             TokenKind::Test => Ok(Item::Test(self.parse_test_def()?)),
-            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, lazy, test)")),
+            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, form, channel, lazy, test)")),
         }
     }
 
@@ -201,6 +210,7 @@ impl Parser {
     }
 
     fn parse_function(&mut self, is_pub: bool) -> Result<Function, ParseError> {
+        let must_use = self.match_token(&TokenKind::MustUse);
         let span = self.current_span();
         self.expect(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
@@ -219,7 +229,7 @@ impl Parser {
 
         let body = self.parse_block()?;
 
-        Ok(Function { name, lifetimes, type_params, params, return_type, trait_bounds, body, is_pub, span })
+        Ok(Function { name, lifetimes, type_params, params, return_type, trait_bounds, body, is_pub, must_use, span })
     }
 
     /// Parse optional where clause: `where T: Display, U: Clone`
@@ -301,6 +311,8 @@ impl Parser {
         let mut permissions = None;
         let mut skeleton = None;
         let mut error_boundary = None;
+        let mut chunk = None;
+        let mut on_destroy = None;
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
             match self.peek_kind() {
@@ -310,8 +322,21 @@ impl Parser {
                 TokenKind::Signal => {
                     state.push(self.parse_signal_field()?);
                 }
+                TokenKind::Chunk => {
+                    self.advance();
+                    if let TokenKind::StringLit(s) = self.peek_kind() {
+                        chunk = Some(s.clone());
+                        self.advance();
+                    }
+                    self.match_token(&TokenKind::Semicolon);
+                }
                 TokenKind::Fn => {
-                    methods.push(self.parse_function(false)?);
+                    let func = self.parse_function(false)?;
+                    if func.name == "on_destroy" {
+                        on_destroy = Some(func);
+                    } else {
+                        methods.push(func);
+                    }
                 }
                 TokenKind::Style => {
                     styles.extend(self.parse_style_blocks()?);
@@ -334,7 +359,7 @@ impl Parser {
                 TokenKind::Ident(ref id) if id == "error_boundary" => {
                     error_boundary = Some(self.parse_error_boundary()?);
                 }
-                _ => return Err(self.error("Expected let, signal, fn, style, transition, render, permissions, gesture, skeleton, or error_boundary in component")),
+                _ => return Err(self.error("Expected let, signal, fn, chunk, style, transition, render, permissions, gesture, skeleton, or error_boundary in component")),
             }
         }
 
@@ -345,7 +370,7 @@ impl Parser {
             span,
         })?;
 
-        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, span })
+        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, chunk, on_destroy, span })
     }
 
     fn parse_page(&mut self, is_pub: bool) -> Result<PageDef, ParseError> {
@@ -636,11 +661,12 @@ impl Parser {
         let initializer = self.parse_expr()?;
         self.expect(&TokenKind::Semicolon)?;
 
-        Ok(StateField { name, ty, mutable, secret, initializer, ownership })
+        Ok(StateField { name, ty, mutable, secret, atomic: false, initializer, ownership })
     }
 
     fn parse_signal_field(&mut self) -> Result<StateField, ParseError> {
         self.expect(&TokenKind::Signal)?;
+        let atomic = self.match_token(&TokenKind::Atomic);
         let secret = self.match_token(&TokenKind::Secret);
         let name = self.expect_ident()?;
 
@@ -659,6 +685,7 @@ impl Parser {
             ty,
             mutable: true,
             secret,
+            atomic,
             initializer,
             ownership: Ownership::Owned,
         })
@@ -1445,6 +1472,7 @@ impl Parser {
         let mut actions = Vec::new();
         let mut computed = Vec::new();
         let mut effects = Vec::new();
+        let mut selectors = Vec::new();
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
             match self.peek_kind() {
@@ -1461,12 +1489,21 @@ impl Parser {
                 TokenKind::Effect => {
                     effects.push(self.parse_effect()?);
                 }
-                _ => return Err(self.error("Expected signal, action, computed, or effect in store")),
+                TokenKind::Selector => {
+                    let sel_span = self.current_span();
+                    self.advance();
+                    let sel_name = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    let body = self.parse_expr()?;
+                    self.match_token(&TokenKind::Semicolon);
+                    selectors.push(SelectorDef { name: sel_name, deps: vec![], body, span: sel_span });
+                }
+                _ => return Err(self.error("Expected signal, action, computed, effect, or selector in store")),
             }
         }
 
         self.expect(&TokenKind::RightBrace)?;
-        Ok(StoreDef { name, signals, actions, computed, effects, is_pub, span })
+        Ok(StoreDef { name, signals, actions, computed, effects, selectors, is_pub, span })
     }
 
     fn parse_action(&mut self, is_async: bool) -> Result<ActionDef, ParseError> {
@@ -1762,6 +1799,7 @@ impl Parser {
             }
             TokenKind::Signal => {
                 self.advance();
+                let atomic = self.match_token(&TokenKind::Atomic);
                 let secret = self.match_token(&TokenKind::Secret);
                 let name = self.expect_ident()?;
                 let ty = if self.match_token(&TokenKind::Colon) {
@@ -1772,7 +1810,7 @@ impl Parser {
                 self.expect(&TokenKind::Equals)?;
                 let value = self.parse_expr()?;
                 self.expect(&TokenKind::Semicolon)?;
-                Ok(Stmt::Signal { name, ty, secret, value })
+                Ok(Stmt::Signal { name, ty, secret, atomic, value })
             }
             TokenKind::Return => {
                 self.advance();
@@ -2124,10 +2162,9 @@ impl Parser {
             }
             TokenKind::Spawn => {
                 self.advance();
-                self.expect(&TokenKind::LeftBrace)?;
-                let body = self.parse_expr()?;
-                self.expect(&TokenKind::RightBrace)?;
-                Ok(Expr::Spawn { body: Box::new(body) })
+                let span = self.current_span();
+                let body = self.parse_block()?;
+                Ok(Expr::Spawn { body, span })
             }
             TokenKind::Channel => {
                 self.advance();
@@ -2152,16 +2189,15 @@ impl Parser {
             }
             TokenKind::Parallel => {
                 self.advance();
+                let span = self.current_span();
                 self.expect(&TokenKind::LeftBrace)?;
-                let mut exprs = Vec::new();
+                let mut tasks = Vec::new();
                 while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
-                    exprs.push(self.parse_expr()?);
-                    if !self.check(&TokenKind::RightBrace) {
-                        self.expect(&TokenKind::Comma)?;
-                    }
+                    tasks.push(self.parse_expr()?);
+                    self.match_token(&TokenKind::Comma);
                 }
                 self.expect(&TokenKind::RightBrace)?;
-                Ok(Expr::Parallel { exprs })
+                Ok(Expr::Parallel { tasks, span })
             }
             TokenKind::Stream => {
                 // stream <source_expr>
@@ -2246,7 +2282,15 @@ impl Parser {
             }
 
             TokenKind::Ident(_) => {
+                let span = self.current_span();
                 let name = self.expect_ident()?;
+                // Dynamic import: import("./module") — triggers code split
+                if name == "import" && self.check(&TokenKind::LeftParen) {
+                    self.expect(&TokenKind::LeftParen)?;
+                    let path = self.parse_expr()?;
+                    self.expect(&TokenKind::RightParen)?;
+                    return Ok(Expr::DynamicImport { path: Box::new(path), span });
+                }
                 // Check for struct init: Name { field: val }
                 if self.check(&TokenKind::LeftBrace) && name.chars().next().is_some_and(|c| c.is_uppercase()) {
                     self.advance();
@@ -2695,6 +2739,225 @@ impl Parser {
 
         self.expect(&TokenKind::RightBrace)?;
         Ok(blocks)
+    }
+
+    // === Form parsing ===
+
+    fn parse_form(&mut self, is_pub: bool) -> Result<FormDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Form)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut fields = vec![];
+        let mut on_submit = None;
+        let steps = vec![];
+        let mut methods = vec![];
+        let mut styles = vec![];
+        let mut render = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Field => {
+                    fields.push(self.parse_form_field()?);
+                }
+                TokenKind::Fn | TokenKind::Async => {
+                    let f = self.parse_function(false)?;
+                    if f.name == "on_submit" {
+                        on_submit = Some(f.name.clone());
+                    }
+                    methods.push(f);
+                }
+                TokenKind::Style => {
+                    styles.push(self.parse_style_block_single()?);
+                }
+                TokenKind::Render => {
+                    self.advance();
+                    render = Some(self.parse_render_block()?);
+                }
+                _ => {
+                    return Err(self.error(&format!("unexpected token in form: {:?}", self.peek_kind())));
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        Ok(FormDef { name, fields, on_submit, steps, methods, styles, render, is_pub, span })
+    }
+
+    fn parse_form_field(&mut self) -> Result<FormFieldDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Field)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+
+        let mut validators = vec![];
+        let mut label = None;
+        let mut placeholder = None;
+        let mut default_value = None;
+
+        // Optional block with validators and metadata
+        if self.match_token(&TokenKind::LeftBrace) {
+            while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                let key = self.expect_ident()?;
+                match key.as_str() {
+                    "required" => {
+                        let message = if self.match_token(&TokenKind::Colon) {
+                            Some(self.parse_expr()?)
+                        } else {
+                            None
+                        };
+                        validators.push(ValidatorDef { kind: ValidatorKind::Required, message, span });
+                    }
+                    "min_length" => {
+                        self.expect(&TokenKind::Colon)?;
+                        if let TokenKind::Integer(n) = self.peek_kind() {
+                            let n = n as usize;
+                            self.advance();
+                            validators.push(ValidatorDef { kind: ValidatorKind::MinLength(n), message: None, span });
+                        }
+                    }
+                    "max_length" => {
+                        self.expect(&TokenKind::Colon)?;
+                        if let TokenKind::Integer(n) = self.peek_kind() {
+                            let n = n as usize;
+                            self.advance();
+                            validators.push(ValidatorDef { kind: ValidatorKind::MaxLength(n), message: None, span });
+                        }
+                    }
+                    "pattern" => {
+                        self.expect(&TokenKind::Colon)?;
+                        if let TokenKind::StringLit(s) = self.peek_kind() {
+                            let s = s.clone();
+                            self.advance();
+                            validators.push(ValidatorDef { kind: ValidatorKind::Pattern(s), message: None, span });
+                        }
+                    }
+                    "email" => {
+                        validators.push(ValidatorDef { kind: ValidatorKind::Email, message: None, span });
+                    }
+                    "url" => {
+                        validators.push(ValidatorDef { kind: ValidatorKind::Url, message: None, span });
+                    }
+                    "label" => {
+                        self.expect(&TokenKind::Colon)?;
+                        label = Some(self.parse_expr()?);
+                    }
+                    "placeholder" => {
+                        self.expect(&TokenKind::Colon)?;
+                        placeholder = Some(self.parse_expr()?);
+                    }
+                    "default" => {
+                        self.expect(&TokenKind::Colon)?;
+                        default_value = Some(self.parse_expr()?);
+                    }
+                    "validate" => {
+                        self.expect(&TokenKind::Colon)?;
+                        let fn_name = self.expect_ident()?;
+                        validators.push(ValidatorDef { kind: ValidatorKind::Custom(fn_name), message: None, span });
+                    }
+                    _ => {
+                        return Err(self.error(&format!("unknown form field attribute: {}", key)));
+                    }
+                }
+                self.match_token(&TokenKind::Comma);
+            }
+            self.expect(&TokenKind::RightBrace)?;
+        }
+
+        // Semicolon optional
+        self.match_token(&TokenKind::Semicolon);
+
+        Ok(FormFieldDef { name, ty, validators, label, placeholder, default_value, span })
+    }
+
+    /// Parse a single style block (used by form parser)
+    fn parse_style_block_single(&mut self) -> Result<StyleBlock, ParseError> {
+        let blocks = self.parse_style_blocks()?;
+        Ok(blocks.into_iter().next().unwrap_or(StyleBlock {
+            selector: String::new(),
+            properties: vec![],
+            span: self.current_span(),
+        }))
+    }
+
+    // === Channel parsing ===
+
+    fn parse_channel(&mut self, is_pub: bool) -> Result<ChannelDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Channel)?;
+        let name = self.expect_ident()?;
+
+        // Optional contract binding: channel Chat -> ChatMessage { ... }
+        let contract = if self.match_token(&TokenKind::Arrow) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut url = Expr::StringLit("".to_string());
+        let mut on_message = None;
+        let mut on_connect = None;
+        let mut on_disconnect = None;
+        let mut reconnect = true;
+        let mut heartbeat_interval = None;
+        let mut methods = vec![];
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Fn | TokenKind::Async => {
+                    methods.push(self.parse_function(false)?);
+                }
+                TokenKind::OnMessage => {
+                    self.advance();
+                    on_message = Some(self.parse_function(false)?);
+                }
+                TokenKind::OnConnect => {
+                    self.advance();
+                    on_connect = Some(self.parse_function(false)?);
+                }
+                TokenKind::OnDisconnect => {
+                    self.advance();
+                    on_disconnect = Some(self.parse_function(false)?);
+                }
+                _ => {
+                    // Parse key: value pairs for url, reconnect, heartbeat
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    match key.as_str() {
+                        "url" => { url = self.parse_expr()?; }
+                        "reconnect" => {
+                            if let TokenKind::Ident(ref v) = self.peek_kind() {
+                                reconnect = v == "true";
+                                self.advance();
+                            }
+                        }
+                        "heartbeat" => {
+                            if let TokenKind::Integer(n) = self.peek_kind() {
+                                heartbeat_interval = Some(n as u64);
+                                self.advance();
+                            }
+                        }
+                        _ => {
+                            self.errors.push(ParseError {
+                                message: format!("unknown channel property: {}", key),
+                                span,
+                            });
+                            self.advance();
+                        }
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+
+        Ok(ChannelDef { name, url, contract, on_message, on_connect, on_disconnect, reconnect, heartbeat_interval, methods, is_pub, span })
     }
 
     // === Helpers ===

@@ -55,6 +55,7 @@ pub struct LintConfig {
     pub unreachable_code: bool,
     pub single_match: bool,
     pub redundant_clone: bool,
+    pub resource_leak: bool,
 }
 
 impl Default for LintConfig {
@@ -70,6 +71,7 @@ impl Default for LintConfig {
             unreachable_code: true,
             single_match: true,
             redundant_clone: true,
+            resource_leak: true,
         }
     }
 }
@@ -284,6 +286,17 @@ impl Linter {
                 }
                 self.lint_page(page);
             }
+            Item::Form(form) => {
+                if self.config.pascal_case_types {
+                    self.check_pascal_case(&form.name, form.span, "form");
+                }
+                for m in &form.methods {
+                    if self.config.snake_case_functions {
+                        self.check_snake_case(&m.name, m.span, "method");
+                    }
+                    self.lint_function_body(m);
+                }
+            }
             _ => {}
         }
     }
@@ -312,6 +325,159 @@ impl Linter {
                 self.check_snake_case(&m.name, m.span, "method");
             }
             self.lint_function_body(m);
+        }
+
+        // Resource leak detection (Feature 3)
+        if self.config.resource_leak {
+            self.lint_resource_leaks(c);
+        }
+    }
+
+    /// Check for potential memory leaks: event listeners, intervals, timeouts,
+    /// and subscriptions that are acquired but never cleaned up in on_destroy.
+    fn lint_resource_leaks(&mut self, component: &Component) {
+        let acquisition_patterns = ["addEventListener", "setInterval", "setTimeout", "subscribe"];
+        let release_patterns = ["removeEventListener", "clearInterval", "clearTimeout", "unsubscribe"];
+
+        let mut acquisitions: Vec<(&str, Span)> = Vec::new();
+
+        // Walk methods (excluding on_destroy) for acquisitions
+        for method in &component.methods {
+            if method.name == "on_destroy" { continue; }
+            self.find_acquisition_calls_in_block(&method.body, &acquisition_patterns, &mut acquisitions);
+        }
+
+        if acquisitions.is_empty() { return; }
+
+        // Check on_destroy exists
+        let has_on_destroy = component.on_destroy.is_some()
+            || component.methods.iter().any(|m| m.name == "on_destroy");
+
+        if !has_on_destroy {
+            for (acq, span) in &acquisitions {
+                self.warn(
+                    "resource_leak",
+                    format!("component `{}` uses `{}` but has no on_destroy — potential memory leak", component.name, acq),
+                    *span,
+                    Severity::Warning,
+                );
+            }
+            return;
+        }
+
+        // Check that each acquisition has a corresponding release in on_destroy
+        let destroy_body = if let Some(ref destroy_fn) = component.on_destroy {
+            Some(&destroy_fn.body)
+        } else {
+            component.methods.iter()
+                .find(|m| m.name == "on_destroy")
+                .map(|m| &m.body)
+        };
+
+        if let Some(destroy_body) = destroy_body {
+            let mut releases: Vec<(&str, Span)> = Vec::new();
+            self.find_acquisition_calls_in_block(destroy_body, &release_patterns, &mut releases);
+            let release_names: Vec<&str> = releases.iter().map(|(n, _)| *n).collect();
+
+            for (acq, span) in &acquisitions {
+                let expected_release = match *acq {
+                    "addEventListener" => "removeEventListener",
+                    "setInterval" => "clearInterval",
+                    "setTimeout" => "clearTimeout",
+                    "subscribe" => "unsubscribe",
+                    _ => continue,
+                };
+                if !release_names.contains(&expected_release) {
+                    self.warn(
+                        "resource_leak",
+                        format!(
+                            "component `{}` calls `{}` but on_destroy does not call `{}` — potential memory leak",
+                            component.name, acq, expected_release
+                        ),
+                        *span,
+                        Severity::Warning,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Walk a block looking for method calls matching any of the given patterns.
+    fn find_acquisition_calls_in_block<'a>(
+        &self,
+        block: &Block,
+        patterns: &[&'a str],
+        results: &mut Vec<(&'a str, Span)>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Expr(expr) | Stmt::Let { value: expr, .. } | Stmt::Signal { value: expr, .. } => {
+                    self.find_acquisition_calls_in_expr(expr, patterns, results);
+                }
+                Stmt::Return(Some(expr)) | Stmt::Yield(expr) => {
+                    self.find_acquisition_calls_in_expr(expr, patterns, results);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Walk an expression tree looking for method calls matching any of the given patterns.
+    fn find_acquisition_calls_in_expr<'a>(
+        &self,
+        expr: &Expr,
+        patterns: &[&'a str],
+        results: &mut Vec<(&'a str, Span)>,
+    ) {
+        match expr {
+            Expr::MethodCall { object, method, args, .. } => {
+                for pattern in patterns {
+                    if method == pattern {
+                        // Use a dummy span since Expr doesn't carry spans directly
+                        results.push((pattern, Span::new(0, 0, 0, 0)));
+                    }
+                }
+                self.find_acquisition_calls_in_expr(object, patterns, results);
+                for arg in args {
+                    self.find_acquisition_calls_in_expr(arg, patterns, results);
+                }
+            }
+            Expr::FnCall { callee, args } => {
+                // Check if callee is an identifier matching a pattern
+                if let Expr::Ident(name) = callee.as_ref() {
+                    for pattern in patterns {
+                        if name == pattern {
+                            results.push((pattern, Span::new(0, 0, 0, 0)));
+                        }
+                    }
+                }
+                self.find_acquisition_calls_in_expr(callee, patterns, results);
+                for arg in args {
+                    self.find_acquisition_calls_in_expr(arg, patterns, results);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                self.find_acquisition_calls_in_expr(left, patterns, results);
+                self.find_acquisition_calls_in_expr(right, patterns, results);
+            }
+            Expr::If { condition, then_block, else_block, .. } => {
+                self.find_acquisition_calls_in_expr(condition, patterns, results);
+                self.find_acquisition_calls_in_block(then_block, patterns, results);
+                if let Some(blk) = else_block {
+                    self.find_acquisition_calls_in_block(blk, patterns, results);
+                }
+            }
+            Expr::Block(block) => {
+                self.find_acquisition_calls_in_block(block, patterns, results);
+            }
+            Expr::Assign { target, value } => {
+                self.find_acquisition_calls_in_expr(target, patterns, results);
+                self.find_acquisition_calls_in_expr(value, patterns, results);
+            }
+            Expr::Closure { body, .. } => {
+                self.find_acquisition_calls_in_expr(body, patterns, results);
+            }
+            _ => {}
         }
     }
 
@@ -629,9 +795,9 @@ impl Linter {
             Expr::Await(inner)
             | Expr::Borrow(inner)
             | Expr::BorrowMut(inner)
-            | Expr::Spawn { body: inner }
             | Expr::Navigate { path: inner }
             | Expr::Stream { source: inner } => self.lint_expr(inner),
+            Expr::Spawn { body, .. } => self.lint_block(body),
             Expr::StructInit { fields, .. } => {
                 for (_, v) in fields {
                     self.lint_expr(v);
@@ -759,10 +925,12 @@ impl Linter {
             Expr::Await(inner)
             | Expr::Borrow(inner)
             | Expr::BorrowMut(inner)
-            | Expr::Spawn { body: inner }
             | Expr::Navigate { path: inner }
             | Expr::Stream { source: inner } => {
                 self.collect_calls_in_expr(inner, calls);
+            }
+            Expr::Spawn { body, .. } => {
+                self.collect_calls_in_block(body, calls);
             }
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
                 self.collect_calls_in_expr(object, calls);
@@ -880,10 +1048,20 @@ impl Linter {
             Expr::Await(inner)
             | Expr::Borrow(inner)
             | Expr::BorrowMut(inner)
-            | Expr::Spawn { body: inner }
             | Expr::Navigate { path: inner }
             | Expr::Stream { source: inner } => {
                 self.collect_idents_in_expr(inner, idents);
+            }
+            Expr::Spawn { body, .. } => {
+                for s in &body.stmts {
+                    match s {
+                        Stmt::Expr(e) | Stmt::Let { value: e, .. } | Stmt::Signal { value: e, .. } | Stmt::Yield(e) => {
+                            self.collect_idents_in_expr(e, idents);
+                        }
+                        Stmt::Return(Some(e)) => self.collect_idents_in_expr(e, idents),
+                        _ => {}
+                    }
+                }
             }
             Expr::TryCatch {
                 body, catch_body, ..
@@ -1035,6 +1213,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };
@@ -1061,6 +1240,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };
@@ -1087,6 +1267,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };
@@ -1137,6 +1318,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };
@@ -1172,6 +1354,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };
@@ -1213,6 +1396,7 @@ mod tests {
                     span: dummy_span(),
                 },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         };

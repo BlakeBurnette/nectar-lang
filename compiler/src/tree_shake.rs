@@ -75,7 +75,7 @@ pub fn shake(program: &mut Program, entry_points: &[String], stats: &mut ShakeSt
 
     // Also keep Use items (imports) and Test items always.
     for (i, item) in program.items.iter().enumerate() {
-        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_) | Item::Page(_)) {
+        if matches!(item, Item::Use(_) | Item::Test(_) | Item::Contract(_) | Item::App(_) | Item::Page(_) | Item::Form(_) | Item::Channel(_)) {
             // Always keep these
             reachable.insert(i);
         }
@@ -124,6 +124,8 @@ fn item_name(item: &Item) -> Option<String> {
         Item::App(a) => Some(a.name.clone()),
         Item::Trait(t) => Some(t.name.clone()),
         Item::Page(p) => Some(p.name.clone()),
+        Item::Form(f) => Some(f.name.clone()),
+        Item::Channel(ch) => Some(ch.name.clone()),
         Item::Mod(m) => Some(m.name.clone()),
     }
 }
@@ -228,6 +230,11 @@ fn collect_item_deps(item: &Item, deps: &mut HashSet<String>) {
             }
             collect_template_deps(&page.render.body, deps);
         }
+        Item::Form(form) => {
+            for method in &form.methods {
+                collect_block_deps(&method.body, deps);
+            }
+        }
         Item::Use(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}
             Item::App(app) => {
@@ -235,6 +242,24 @@ fn collect_item_deps(item: &Item, deps: &mut HashSet<String>) {
                     for route in &router.routes {
                         deps.insert(route.component.clone());
                     }
+                }
+            }
+            Item::Channel(ch) => {
+                collect_expr_deps(&ch.url, deps);
+                if let Some(ref contract) = ch.contract {
+                    deps.insert(contract.clone());
+                }
+                for method in &ch.methods {
+                    collect_block_deps(&method.body, deps);
+                }
+                if let Some(ref handler) = ch.on_message {
+                    collect_block_deps(&handler.body, deps);
+                }
+                if let Some(ref handler) = ch.on_connect {
+                    collect_block_deps(&handler.body, deps);
+                }
+                if let Some(ref handler) = ch.on_disconnect {
+                    collect_block_deps(&handler.body, deps);
                 }
             }
     }
@@ -344,8 +369,11 @@ fn collect_expr_deps(expr: &Expr, deps: &mut HashSet<String>) {
         }
         Expr::Borrow(e) | Expr::BorrowMut(e) | Expr::Await(e)
         | Expr::Stream { source: e } | Expr::Navigate { path: e }
-        | Expr::Spawn { body: e } | Expr::Receive { channel: e } => {
+        | Expr::Receive { channel: e } => {
             collect_expr_deps(e, deps);
+        }
+        Expr::Spawn { body, .. } => {
+            collect_block_deps(body, deps);
         }
         Expr::Send { channel, value } => {
             collect_expr_deps(channel, deps);
@@ -363,8 +391,8 @@ fn collect_expr_deps(expr: &Expr, deps: &mut HashSet<String>) {
             collect_expr_deps(url, deps);
             if let Some(opts) = options { collect_expr_deps(opts, deps); }
         }
-        Expr::Parallel { exprs } => {
-            for e in exprs { collect_expr_deps(e, deps); }
+        Expr::Parallel { tasks, .. } => {
+            for e in tasks { collect_expr_deps(e, deps); }
         }
         Expr::PromptTemplate { interpolations, .. } => {
             for (_, e) in interpolations { collect_expr_deps(e, deps); }
@@ -436,6 +464,7 @@ mod tests {
             trait_bounds: vec![],
             body: Block { stmts, span: dummy_span() },
             is_pub,
+            must_use: false,
             span: dummy_span(),
         })
     }

@@ -63,6 +63,27 @@ fn collect_enum_defs(program: &Program) -> HashMap<String, EnumInfo> {
             );
         }
     }
+    // Register built-in Result<T,E> and Option<T> as enum-like types so that
+    // match exhaustiveness checking requires Ok/Err and Some/None arms.
+    enums.entry("Result".to_string()).or_insert_with(|| {
+        let mut fc = HashMap::new();
+        fc.insert("Ok".to_string(), 1);
+        fc.insert("Err".to_string(), 1);
+        EnumInfo {
+            variant_names: vec!["Ok".to_string(), "Err".to_string()],
+            variant_field_counts: fc,
+        }
+    });
+    enums.entry("Option".to_string()).or_insert_with(|| {
+        let mut fc = HashMap::new();
+        fc.insert("Some".to_string(), 1);
+        fc.insert("None".to_string(), 0);
+        EnumInfo {
+            variant_names: vec!["Some".to_string(), "None".to_string()],
+            variant_field_counts: fc,
+        }
+    });
+
     enums
 }
 
@@ -477,10 +498,11 @@ fn walk_expr(expr: &Expr, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
         }
         Expr::Block(block) => walk_block(block, enums, errors),
         Expr::Borrow(inner) | Expr::BorrowMut(inner) | Expr::Await(inner)
-        | Expr::Stream { source: inner } | Expr::Spawn { body: inner }
+        | Expr::Stream { source: inner }
         | Expr::Receive { channel: inner } | Expr::Navigate { path: inner } => {
             walk_expr(inner, enums, errors);
         }
+        Expr::Spawn { body: blk, .. } => walk_block(blk, enums, errors),
         Expr::Assign { target, value } => {
             walk_expr(target, enums, errors);
             walk_expr(value, enums, errors);
@@ -500,8 +522,8 @@ fn walk_expr(expr: &Expr, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
             walk_expr(body, enums, errors);
             walk_expr(catch_body, enums, errors);
         }
-        Expr::Parallel { exprs } => {
-            for e in exprs {
+        Expr::Parallel { tasks, .. } => {
+            for e in tasks {
                 walk_expr(e, enums, errors);
             }
         }
@@ -584,6 +606,21 @@ fn walk_item(item: &Item, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
             Item::Contract(_) => {}
             Item::App(_) => {}
             Item::Page(_) => {}
+            Item::Form(_) => {}
+            Item::Channel(ch) => {
+                if let Some(ref handler) = ch.on_message {
+                    walk_block(&handler.body, enums, errors);
+                }
+                if let Some(ref handler) = ch.on_connect {
+                    walk_block(&handler.body, enums, errors);
+                }
+                if let Some(ref handler) = ch.on_disconnect {
+                    walk_block(&handler.body, enums, errors);
+                }
+                for method in &ch.methods {
+                    walk_block(&method.body, enums, errors);
+                }
+            }
         Item::Struct(_) | Item::Enum(_) | Item::Use(_) | Item::Router(_)
         | Item::LazyComponent(_) | Item::Trait(_) | Item::Mod(_) => {}
     }
@@ -669,6 +706,7 @@ mod tests {
             lifetimes: vec![],
             body: block(vec![Stmt::Expr(expr)]),
             is_pub: false,
+            must_use: false,
             span: span(),
         })
     }

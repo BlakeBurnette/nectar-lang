@@ -1,0 +1,64 @@
+// realtime.nectar — Real-time WebSocket support
+//
+// Nectar makes WebSocket connections a language construct:
+// - `channel` keyword with automatic reconnection and backoff
+// - Type-safe messages via contract binding
+// - Built-in heartbeat monitoring
+// - on_connect, on_message, on_disconnect lifecycle handlers
+//
+// No Socket.io. No Pusher SDK. No manual reconnection logic.
+
+contract ChatMessage {
+    user: String,
+    text: String,
+    timestamp: i64,
+}
+
+channel Chat -> ChatMessage {
+    url: "wss://api.example.com/ws/chat",
+    reconnect: true,
+    heartbeat: 30000,
+
+    on_connect fn() {
+        // Runs when connection is established
+    }
+
+    on_message fn(msg: ChatMessage) {
+        // Runs for each incoming message — already typed
+    }
+
+    on_disconnect fn() {
+        // Runs when connection drops — reconnect is automatic
+    }
+
+    fn send_message(&self, text: String) {
+        // Send typed message through the channel
+    }
+}
+
+// --- Live notifications ---
+
+channel Notifications {
+    url: "wss://api.example.com/ws/notifications",
+    reconnect: true,
+
+    on_message fn(data: String) {
+        // Handle notification
+    }
+}
+
+// --- Why this matters ---
+//
+// In JavaScript:
+//   let ws = new WebSocket(url);
+//   ws.onopen = () => { /* ... */ };
+//   ws.onmessage = (e) => { /* parse JSON, hope it matches */ };
+//   ws.onclose = () => { setTimeout(() => reconnect(), delay); };
+//   ws.onerror = () => { /* which error? who knows */ };
+//   // Manual reconnection with backoff? You write it.
+//   // Type-safe messages? You wish.
+//   // Heartbeat monitoring? Another 30 lines.
+//
+// In Nectar:
+//   channel Chat -> ChatMessage { url: "wss://...", reconnect: true }
+//   // Reconnection, backoff, heartbeat, type safety — all built in.

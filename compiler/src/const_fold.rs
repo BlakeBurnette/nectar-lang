@@ -75,10 +75,25 @@ fn fold_item(item: &mut Item, stats: &mut FoldStats) {
                 fold_expr(&mut state.initializer, stats);
             }
         }
+        Item::Form(form) => {
+            for field in &mut form.fields {
+                if let Some(ref mut default) = field.default_value {
+                    fold_expr(default, stats);
+                }
+            }
+            for method in &mut form.methods {
+                fold_function(method, stats);
+            }
+        }
         Item::Struct(_) | Item::Enum(_) | Item::Use(_)
         | Item::Router(_) | Item::LazyComponent(_) | Item::Test(_) | Item::Trait(_) | Item::Mod(_) => {}
             Item::Contract(_) => {}
             Item::App(_) => {}
+            Item::Channel(ch) => {
+                for method in &mut ch.methods {
+                    fold_function(method, stats);
+                }
+            }
     }
 }
 
@@ -170,8 +185,11 @@ pub fn fold_expr(expr: &mut Expr, stats: &mut FoldStats) {
         }
         Expr::Borrow(inner) | Expr::BorrowMut(inner) | Expr::Await(inner)
         | Expr::Stream { source: inner } | Expr::Navigate { path: inner }
-        | Expr::Spawn { body: inner } | Expr::Receive { channel: inner } => {
+        | Expr::Receive { channel: inner } => {
             fold_expr(inner, stats);
+        }
+        Expr::Spawn { body: blk, .. } => {
+            fold_block(blk, stats);
         }
         Expr::Send { channel, value } => {
             fold_expr(channel, stats);
@@ -191,8 +209,8 @@ pub fn fold_expr(expr: &mut Expr, stats: &mut FoldStats) {
                 fold_expr(opts, stats);
             }
         }
-        Expr::Parallel { exprs } => {
-            for e in exprs {
+        Expr::Parallel { tasks, .. } => {
+            for e in tasks {
                 fold_expr(e, stats);
             }
         }
@@ -355,6 +373,7 @@ mod tests {
                 trait_bounds: vec![],
                 body: Block { stmts, span: dummy_span() },
                 is_pub: false,
+                must_use: false,
                 span: dummy_span(),
             })],
         }
