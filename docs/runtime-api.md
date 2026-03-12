@@ -1,10 +1,14 @@
 # Nectar Runtime API Reference
 
-This document describes every WASM import module and function provided by the Nectar runtime (`nectar-runtime.js`). These are the host functions that compiled Arc modules call to interact with the browser environment.
+This document describes every WASM import namespace and function provided by the Nectar runtime (`runtime/modules/core.js`). These are the host functions that compiled Nectar modules call to interact with the browser environment.
+
+> **Note:** All WASM imports are provided by a single runtime file (core.js). Namespaces below are logical groupings within that file, not separate modules.
 
 ---
 
 ## Table of Contents
+
+All syscalls live in a single `core.js` file, organized by the following namespaces:
 
 1. [dom](#dom) -- DOM manipulation
 2. [signal](#signal) -- Reactive state primitives
@@ -27,6 +31,55 @@ This document describes every WASM import module and function provided by the Ne
 ## dom
 
 DOM manipulation functions for creating and updating the document tree.
+
+### Primary Rendering Path: mount / hydrateRefs / flush
+
+The primary rendering path uses bulk operations rather than individual DOM syscalls:
+
+#### mount
+
+```
+dom.mount(containerElId: i32, htmlPtr: i32, htmlLen: i32)
+```
+
+Initial render via `innerHTML` from a WASM-built string. The WASM module constructs the full HTML string in linear memory, and the runtime sets it as the container's `innerHTML` in a single operation.
+
+#### hydrateRefs
+
+```
+dom.hydrateRefs(containerElId: i32)
+```
+
+Walks the rendered DOM tree looking for `data-nid` attributes and registers element handles for each one. This allows subsequent fine-grained updates to reference specific elements without `querySelector` calls.
+
+#### flush
+
+```
+dom.flush(bufPtr: i32, bufLen: i32)
+```
+
+Reads batched opcodes from a WASM command buffer and applies them to the DOM in a single pass. Supported opcodes:
+
+- `SET_TEXT` -- set text content of an element
+- `SET_ATTR` -- set an HTML attribute
+- `REMOVE_ATTR` -- remove an HTML attribute
+- `APPEND_CHILD` -- append a child element
+- `REMOVE_CHILD` -- remove a child element
+- `INSERT_BEFORE` -- insert an element before a reference node
+- `SET_STYLE` -- set an inline style property
+- `CLASS_ADD` -- add a CSS class
+- `CLASS_REMOVE` -- remove a CSS class
+- `CLASS_TOGGLE` -- toggle a CSS class
+- `SET_INNER_HTML` -- set innerHTML of an element
+- `ADD_EVENT` -- add an event listener
+- `REMOVE_EVENT` -- remove an event listener
+- `FOCUS` -- focus an element
+- `BLUR` -- blur (unfocus) an element
+- `SET_PROPERTY` -- set a DOM property
+
+### Individual DOM Syscalls
+
+The individual syscalls below are still available for operations that need return values (e.g., `createElement`, `querySelector`, `getElementById`).
 
 ### createElement
 
@@ -796,7 +849,7 @@ Note: The current test runner validates tests through the full compilation pipel
 
 ## sw
 
-Service worker management for offline-first applications. Arc ships a built-in service worker (`nectar-service-worker.js`) and client registration script (`nectar-sw-register.js`).
+Service worker management for offline-first applications. Nectar ships a built-in service worker (`nectar-service-worker.js`). Registration and update detection are handled by the `sw` namespace in `core.js`.
 
 ### register
 
@@ -804,7 +857,7 @@ Service worker management for offline-first applications. Arc ships a built-in s
 sw.register()
 ```
 
-Registers the Arc service worker at `/nectar-sw.js`. If the `NectarSW` client library is loaded on the page, delegates to it for update detection and lifecycle management. Otherwise, performs a direct `navigator.serviceWorker.register()` call.
+Registers the Nectar service worker at `/nectar-sw.js`. If the `NectarSW` client library is loaded on the page, delegates to it for update detection and lifecycle management. Otherwise, performs a direct `navigator.serviceWorker.register()` call.
 
 ### precache
 
@@ -842,11 +895,12 @@ The built-in service worker (`nectar-service-worker.js`) provides:
 
 ### Client Registration Script
 
-The client script (`nectar-sw-register.js`) exposes a global `NectarSW` object:
+The `sw` export from `core.js` provides:
 
-- `NectarSW.register(swUrl?)` -- registers the service worker (default path: `/nectar-sw.js`)
-- `NectarSW.update()` -- forces a waiting service worker to activate (triggers page reload)
-- `NectarSW.updateAvailable` -- boolean, true when a new version is waiting
-- `NectarSW.isOffline` -- boolean, reactive offline status
+- `sw.register(swUrl?)` -- registers the service worker (default path: `/nectar-sw.js`)
+- `sw.update()` -- forces a waiting service worker to activate (triggers page reload)
+- `sw.updateAvailable` -- boolean, true when a new version is waiting
+- `sw.isOffline` -- boolean, reactive offline status
+- `sw.on('update', cb)` / `sw.on('offline', cb)` -- event listeners
 - `NectarSW.on("update", fn)` -- listen for update availability
 - `NectarSW.on("offline", fn)` -- listen for online/offline state changes

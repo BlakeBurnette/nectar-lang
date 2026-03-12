@@ -61,9 +61,9 @@ Nectar gives you one binary (`nectar`) that serves as compiler, formatter, linte
 
 ### The JS Syscall Layer
 
-Nectar does not generate JavaScript. ALL application logic runs in WASM. The JS layer is approximately 30 browser API syscalls that WASM cannot call directly:
+Nectar does not generate JavaScript. ALL application logic runs in WASM. The JS layer is a single file (`core.js`) exposing approximately 30 browser API syscalls that WASM cannot call directly:
 
-- DOM manipulation (createElement, setAttribute, innerHTML, etc.)
+- DOM manipulation — primary path is mount/flush opcodes (see Rendering Model below); individual calls (createElement, setAttribute, etc.) available but secondary
 - Event listener registration
 - Fetch / XHR
 - localStorage / sessionStorage
@@ -88,9 +88,9 @@ That is it. Every conditional, every loop, every string operation, every data tr
 - O(1) cost per signal change (write opcode to buffer)
 - O(n) cost per frame where n = number of changed bindings, not total DOM size
 
-### Runtime Module System
+### Runtime Structure
 
-The compiler analyzes your source code and includes only the runtime modules you actually use. There are 22 independent modules. A minimal app that uses only components and signals loads the `core` module (~3 KB). Each additional feature (forms, channels, PWA, etc.) adds its own module only when the compiler detects usage. This is automatic. You do not configure it.
+The entire JS runtime is a single file (`core.js`, ~2.8 KB gzip). It contains all syscall namespaces (DOM, fetch, storage, WebSocket, etc.). The WASM binary only imports the namespaces it actually uses — unused namespaces are dead code that is never called. There is no per-file tree-shaking or multi-module system; the compiler simply omits imports for features your code does not reference.
 
 ---
 
@@ -446,7 +446,7 @@ router AppRouter {
 
 ## 5. Standard Library Reference
 
-The Nectar standard library requires **no imports**. The compiler detects which functions you use and auto-includes only the needed modules. If you do not use a feature, it adds zero bytes to your output.
+The Nectar standard library requires **no imports**. The compiler detects which functions you use and only generates WASM imports for the syscall namespaces you need. If you do not use a feature, the corresponding namespace in `core.js` is never called.
 
 ### Always Include (Recommended for Every App)
 
@@ -1777,7 +1777,7 @@ A typical production build produces:
 ```
 dist/
   app.wasm          # Your compiled application (all logic)
-  nectar-runtime.js # Syscall shim (~2.8 KB gzip)
+  core.js           # Syscall shim (~2.8 KB gzip, single file)
   index.html        # Entry point
   styles.css        # Extracted CSS (scoped styles + critical CSS)
   sw.js             # Service worker (if --target pwa)

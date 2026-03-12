@@ -12,13 +12,13 @@
  */
 
 // Stamped by the Nectar compiler at build time
-const CACHE_VERSION = "__ARC_CACHE_VERSION__";
+const CACHE_VERSION = "__NECTAR_CACHE_VERSION__";
 const APP_CACHE = `nectar-app-v${CACHE_VERSION}`;
 const WASM_CACHE = `nectar-wasm-v${CACHE_VERSION}`;
 const API_CACHE = `nectar-api-v${CACHE_VERSION}`;
 
 // Populated by the Nectar compiler from the build manifest
-const PRECACHE_URLS = self.__ARC_PRECACHE_MANIFEST__ || [];
+const PRECACHE_URLS = self.__NECTAR_PRECACHE_MANIFEST__ || [];
 
 const OFFLINE_PAGE = "/offline.html";
 

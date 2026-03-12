@@ -1,4 +1,4 @@
-# Arc Architecture & Internals
+# Nectar Architecture & Internals
 
 This document describes the internal architecture of the Nectar compiler and runtime for contributors who want to understand, modify, or extend the system.
 
@@ -26,7 +26,7 @@ This document describes the internal architecture of the Nectar compiler and run
 Nectar's compiler is a traditional multi-pass compiler written in Rust. Source code flows through the following stages:
 
 ```
-                    Arc Source (.nectar)
+                    Nectar Source (.nectar)
                          |
                     +----v----+
                     |  Lexer  |  tokenize()
@@ -86,6 +86,7 @@ All compiler modules live in `compiler/src/`:
 | Constant folding | `const_fold.rs` | Compile-time expression evaluation |
 | Dead code elimination | `dce.rs` | Remove unreachable statements |
 | Tree shaking | `tree_shake.rs` | Remove unused top-level items |
+| Runtime namespace analysis | `runtime_modules.rs` | Detect WASM import namespaces for dead code elimination |
 | WASM optimization | `wasm_opt.rs` | Peephole optimization on WAT output |
 | WAT codegen | `codegen.rs` | AST to WebAssembly Text Format |
 | Binary WASM codegen | `wasm_binary.rs` | AST to binary .wasm |
@@ -262,7 +263,7 @@ Inside a store body:
 
 **File**: `compiler/src/borrow_checker.rs`
 
-Arc implements a simplified version of Rust's borrow checker to catch memory safety issues at compile time.
+Nectar implements a simplified version of Rust's borrow checker to catch memory safety issues at compile time.
 
 ### Ownership Model
 
@@ -430,7 +431,7 @@ At `-O2`, a post-codegen pass performs peephole optimizations on the emitted WAT
 Statistics are reported:
 
 ```
-arc: wasm optimization: 12 patterns optimized, 340 bytes saved
+nectar: wasm optimization: 12 patterns optimized, 340 bytes saved
 ```
 
 ---
@@ -453,7 +454,7 @@ The primary code generator emits WebAssembly Text Format (WAT). WAT is human-rea
 
 ### Import Generation
 
-The codegen emits imports for all runtime modules:
+The codegen emits imports for the runtime's WASM import namespaces (all provided by the single `core.js` runtime file):
 
 ```wat
 (import "env" "memory" (memory 1))
@@ -543,14 +544,14 @@ Function bodies are compiled to WASM bytecode opcodes:
 
 ## Runtime Bridge
 
-**File**: `runtime/nectar-runtime.js`
+**File**: `runtime/modules/core.js`
 
 The JavaScript runtime provides host functions that WASM modules import. It bridges the gap between WASM's linear memory model and browser APIs.
 
 ### Initialization Flow
 
 1. `NectarRuntime.mount(wasmUrl, rootElement)` is called with the `.wasm` URL and a root DOM element
-2. The runtime creates a `WebAssembly.Memory` and builds the import object with all host function modules
+2. The runtime creates a `WebAssembly.Memory` and builds the import object with all host function namespaces (provided by the single `core.js` file)
 3. The WASM module is instantiated with the import object
 4. Store `*_init` exports are called to initialize global stores
 5. The first `*_mount` export is called to render the initial component

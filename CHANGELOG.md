@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dev server `--flags` option for enabling feature flags during development
 - Dev server `--tunnel` option for exposing local server via public URL
 - Data caching: `cache` keyword with queries, mutations, stale-while-revalidate, optimistic updates, persistent IndexedDB cache, compile-time request deduplication
-- Runtime tree-shaking: compiler detects used features and includes only needed runtime modules (22 independent modules, core-only build ~3KB)
+- Runtime tree-shaking: compiler detects used features and emits only the needed code in a single `core.js` runtime file (~3KB core-only build)
 - Automatic accessibility: compiler generates ARIA attributes, roles, keyboard navigation, focus management, skip-nav links, live regions. Three modes: auto (default), hybrid, manual
 - Cryptography: `crypto` namespace with sha256, sha512, hmac, encrypt, decrypt, sign, verify, derive_key, random_uuid, random_bytes — all backed by WebCrypto
 - Theming: `theme` keyword with light/dark/auto modes, CSS custom properties, zero-flash toggle (~200 bytes runtime)

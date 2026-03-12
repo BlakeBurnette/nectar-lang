@@ -64,13 +64,13 @@ cargo build --release
   ├─ Codegen → WAT
   └─ Binary emit → .wasm
        ↓
-  Browser loads .wasm + thin JS syscall layer (~2.8 KB gzip)
+  Browser loads .wasm + single JS syscall file (~3 KB gzip)
        ↓
   mount() → innerHTML from WASM-built string (1 call)
   flush() → batched DOM ops from command buffer (1 call/frame)
 ```
 
-Initial renders use `innerHTML` from a WASM-built HTML string. Updates write opcodes into a command buffer in linear memory — a single `flush()` call per frame executes them all. The JS layer is ~30 browser API syscalls. All logic runs in WASM.
+Initial renders use `innerHTML` from a WASM-built HTML string. Updates write opcodes into a command buffer in linear memory — a single `flush()` call per frame executes them all. The JS layer is one file with browser API syscalls that WASM physically cannot call (DOM, WebSocket, IndexedDB, clipboard, etc.). All logic runs in WASM.
 
 ## Performance
 
@@ -103,7 +103,7 @@ See [`examples/`](examples/) for complete working apps:
 | [Getting Started](docs/getting-started.md) | Install, first app, dev server |
 | [Language Reference](docs/language-reference.md) | Full syntax, types, ownership, components, stores |
 | [Architecture](docs/architecture.md) | Compiler pipeline, runtime, WASM bridge |
-| [Runtime API](docs/runtime-api.md) | JS syscall layer, command buffer, module system |
+| [Runtime API](docs/runtime-api.md) | JS syscall layer, command buffer, WASM imports |
 | [Toolchain](docs/toolchain.md) | CLI commands, formatter, linter, LSP |
 | [AI Integration](docs/nectar-for-ai.md) | Agents, tools, prompts, streaming |
 

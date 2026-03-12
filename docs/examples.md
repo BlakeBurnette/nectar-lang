@@ -6,16 +6,16 @@ This document walks through each example program in the `examples/` directory, e
 
 ## Table of Contents
 
-1. [hello.nectar -- Hello World](#helloarc----hello-world)
-2. [counter.nectar -- Stateful Counter](#counterarc----stateful-counter)
-3. [todo.nectar -- Todo Application](#todoarc----todo-application)
-4. [api.nectar -- API Communication](#apiarc----api-communication)
-5. [store.nectar -- Global State Management](#storearc----global-state-management)
-6. [app.nectar -- Routed Application with Styles](#apparc----routed-application-with-styles)
-7. [ai-chat.nectar -- AI Chat Interface](#ai-chatarc----ai-chat-interface)
-8. [tests.nectar -- Comprehensive Test Patterns](#testsarc----comprehensive-test-patterns)
-9. [component-tests.nectar -- Component Testing Patterns](#component-testsarc----component-testing-patterns)
-10. [agent-tests.nectar -- Agent Testing Patterns](#agent-testsarc----agent-testing-patterns)
+1. [hello.nectar -- Hello World](#hellonectar----hello-world)
+2. [counter.nectar -- Stateful Counter](#counternectar----stateful-counter)
+3. [todo.nectar -- Todo Application](#todonectar----todo-application)
+4. [api.nectar -- API Communication](#apinectar----api-communication)
+5. [store.nectar -- Global State Management](#storenectar----global-state-management)
+6. [app.nectar -- Routed Application with Styles](#appnectar----routed-application-with-styles)
+7. [ai-chat.nectar -- AI Chat Interface](#ai-chatnectar----ai-chat-interface)
+8. [tests.nectar -- Comprehensive Test Patterns](#testsnectar----comprehensive-test-patterns)
+9. [component-tests.nectar -- Component Testing Patterns](#component-testsnectar----component-testing-patterns)
+10. [agent-tests.nectar -- Agent Testing Patterns](#agent-testsnectar----agent-testing-patterns)
 
 ---
 
@@ -956,7 +956,7 @@ test "dispatch search_docs tool" {
         query: "nectar language tutorial",
     });
     let log = TestAssistant::get_tool_call_log();
-    assert_eq(log[0], "search_docs: arc language tutorial");
+    assert_eq(log[0], "search_docs: nectar language tutorial");
 }
 ```
 

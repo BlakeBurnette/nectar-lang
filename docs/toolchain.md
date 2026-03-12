@@ -7,19 +7,19 @@ This document covers every command, flag, and configuration option in the Nectar
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [nectar build](#arc-build)
-3. [nectar check](#arc-check)
-4. [nectar test](#arc-test)
-5. [nectar fmt](#arc-fmt)
-6. [nectar lint](#arc-lint)
-7. [nectar dev](#arc-dev)
-8. [nectar init](#arc-init)
-9. [nectar add](#arc-add)
-10. [nectar install](#arc-install)
+2. [nectar build](#nectar-build)
+3. [nectar check](#nectar-check)
+4. [nectar test](#nectar-test)
+5. [nectar fmt](#nectar-fmt)
+6. [nectar lint](#nectar-lint)
+7. [nectar dev](#nectar-dev)
+8. [nectar init](#nectar-init)
+9. [nectar add](#nectar-add)
+10. [nectar install](#nectar-install)
 11. [--lsp (Language Server)](#--lsp-language-server)
 12. [--ssr / --hydrate (Server-Side Rendering)](#--ssr----hydrate-server-side-rendering)
 13. [Direct Compilation Mode](#direct-compilation-mode)
-14. [Nectar.toml Configuration](#arctoml-configuration)
+14. [Nectar.toml Configuration](#nectartoml-configuration)
 
 ---
 
@@ -129,15 +129,16 @@ When `--sw` is passed to `nectar build`, the compiler:
 
 1. **Copies `nectar-service-worker.js`** to the output directory as `nectar-sw.js`
 2. **Stamps `CACHE_VERSION`** with a hash derived from the build output (ensures cache busting on new deploys)
-3. **Generates a precache manifest** listing all output files (`.wasm`, `.js`, `.css`, `.html`) and injects it as `self.__ARC_PRECACHE_MANIFEST__` at the top of the service worker
-4. **Copies `nectar-sw-register.js`** to the output directory for client-side registration
-5. **Injects a registration snippet** into the output HTML (if `--emit-wasm` produces an HTML shell):
+3. **Generates a precache manifest** listing all output files (`.wasm`, `.js`, `.css`, `.html`) and injects it as `self.__NECTAR_PRECACHE_MANIFEST__` at the top of the service worker
+4. **Injects a registration call** into the output HTML via `core.js`:
    ```html
-   <script src="nectar-sw-register.js"></script>
-   <script>NectarSW.register();</script>
+   <script type="module">
+     import { sw } from './core.js';
+     sw.register();
+   </script>
    ```
 
-The generated service worker is fully self-contained and requires no configuration. It uses cache-first for static assets, network-first for API calls, and includes an offline fallback.
+The generated service worker is fully self-contained and requires no configuration. It uses cache-first for static assets, network-first for API calls, and includes an offline fallback. Service worker registration, update detection, and offline status are all handled by the `sw` namespace in `core.js`.
 
 ```sh
 # Build with service worker
@@ -145,8 +146,8 @@ nectar build app.nectar --emit-wasm --sw
 
 # Output directory will contain:
 #   app.wasm
+#   core.js               (unified runtime with SW registration)
 #   nectar-sw.js          (service worker with stamped version + manifest)
-#   nectar-sw-register.js (client registration script)
 ```
 
 ### Compilation Pipeline
@@ -310,11 +311,11 @@ running 3 tests
 test result: ok. 3 passed; 0 failed
 ```
 
-The JavaScript test runner (`nectar-test-runner.js`) also supports watch mode for compiled `.wasm` test modules:
+Watch mode re-runs tests automatically when source files change:
 
 ```sh
-node nectar-test-runner.js tests.wasm --watch
-node nectar-test-runner.js tests.wasm --watch --source-dir ./src
+nectar test app.nectar --watch
+nectar test app.nectar --watch --filter "auth"
 ```
 
 ### Examples
@@ -794,7 +795,7 @@ Install the Nectar VS Code extension, or configure manually in `.vscode/settings
 
 ```json
 {
-  "nectar.serverPath": "/path/to/arc",
+  "nectar.serverPath": "/path/to/nectar",
   "nectar.serverArgs": ["--lsp"]
 }
 ```
@@ -855,7 +856,7 @@ res.send(`
 <html>
 <body>
   <div id="app">${html}</div>
-  <script src="nectar-runtime.js"></script>
+  <script src="core.js"></script>
   <script>
     const runtime = new NectarRuntime();
     runtime.mount('app.hydrate.wasm', document.getElementById('app'));
@@ -921,7 +922,7 @@ const html = renderApp('App', {});
 For quick one-off compilations, you can pass a file directly to `nectar` without a subcommand:
 
 ```sh
-arc app.nectar [OPTIONS]
+nectar app.nectar [OPTIONS]
 ```
 
 This is equivalent to `nectar build app.nectar` but also supports debug flags:
@@ -941,13 +942,13 @@ This is equivalent to `nectar build app.nectar` but also supports debug flags:
 
 ```sh
 # Debug: see all tokens
-arc app.nectar --emit-tokens
+nectar app.nectar --emit-tokens
 
 # Debug: see the full AST
-arc app.nectar --emit-ast
+nectar app.nectar --emit-ast
 
 # Quick compile
-arc app.nectar --emit-wasm -O2 -o dist/app.wasm
+nectar app.nectar --emit-wasm -O2 -o dist/app.wasm
 ```
 
 ---

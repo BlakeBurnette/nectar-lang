@@ -1,302 +1,189 @@
 use crate::ast::*;
 use std::collections::HashSet;
 
-/// Analyzes a program to determine which runtime modules are needed.
-/// The compiler uses this to invoke the runtime builder with only
-/// the modules that the compiled program actually uses, keeping
-/// the output bundle size minimal.
-pub fn detect_required_modules(program: &Program) -> HashSet<String> {
-    let mut modules = HashSet::new();
-    modules.insert("core".to_string()); // always needed
+/// Analyzes a program to determine which WASM import namespaces are used.
+///
+/// With the unified single-file runtime (core.js), there is no JS module
+/// tree-shaking. However, this analysis is still useful for:
+///   1. Dead code elimination in the WASM binary (don't emit unused imports)
+///   2. Build diagnostics (report which features a program uses)
+///   3. Future: conditional compilation of WASM-side feature modules
+pub fn detect_required_namespaces(program: &Program) -> HashSet<String> {
+    let mut ns = HashSet::new();
+    ns.insert("dom".to_string());     // always needed
+    ns.insert("mem".to_string());     // always needed
+    ns.insert("string".to_string());  // always needed
 
     for item in &program.items {
         match item {
-            Item::Page(_) => {
-                modules.insert("seo".to_string());
-            }
-            Item::Form(_) => {
-                modules.insert("form".to_string());
-            }
-            Item::Channel(_) => {
-                modules.insert("channel".to_string());
-            }
-            Item::Contract(_) => {
-                modules.insert("contract".to_string());
-            }
+            Item::Page(_) => { ns.insert("seo".to_string()); }
+            Item::Form(_) => { ns.insert("form".to_string()); }
+            Item::Channel(_) => { ns.insert("channel".to_string()); }
+            Item::Contract(_) => { ns.insert("contract".to_string()); }
             Item::App(app) => {
-                modules.insert("pwa".to_string());
-                if app.a11y.is_some() {
-                    modules.insert("a11y".to_string());
-                }
+                ns.insert("pwa".to_string());
+                if app.a11y.is_some() { ns.insert("a11y".to_string()); }
             }
-            Item::Embed(_) => {
-                modules.insert("embed".to_string());
-            }
-            Item::Pdf(_) => {
-                modules.insert("pdf".to_string());
-            }
-            Item::Payment(_) => {
-                modules.insert("payment".to_string());
-            }
-            Item::Auth(_) => {
-                modules.insert("auth".to_string());
-            }
-            Item::Upload(_) => {
-                modules.insert("upload".to_string());
-            }
-            Item::Db(_) => {
-                modules.insert("db".to_string());
-            }
-            Item::Breakpoints(_) => {
-                modules.insert("responsive".to_string());
-            }
-            Item::Animation(_) => {
-                modules.insert("animate".to_string());
-            }
-            Item::Theme(_) => {
-                modules.insert("theme".to_string());
-            }
+            Item::Embed(_) => { ns.insert("embed".to_string()); }
+            Item::Pdf(_) => { ns.insert("pdf".to_string()); }
+            Item::Payment(_) => { ns.insert("payment".to_string()); }
+            Item::Auth(_) => { ns.insert("auth".to_string()); }
+            Item::Upload(_) => { ns.insert("upload".to_string()); }
+            Item::Db(_) => { ns.insert("db".to_string()); }
+            Item::Breakpoints(_) => { ns.insert("responsive".to_string()); }
+            Item::Animation(_) => { ns.insert("animation".to_string()); }
+            Item::Theme(_) => { ns.insert("theme".to_string()); }
             Item::Component(c) => {
-                if c.a11y.is_some() {
-                    modules.insert("a11y".to_string());
-                }
-                if !c.shortcuts.is_empty() {
-                    modules.insert("shortcuts".to_string());
-                }
-                if c.permissions.is_some() {
-                    modules.insert("permissions".to_string());
-                }
-                if !c.gestures.is_empty() {
-                    modules.insert("pwa".to_string());
-                }
-                if c.on_destroy.is_some() {
-                    modules.insert("lifecycle".to_string());
-                }
-                check_exprs_in_component(c, &mut modules);
+                if c.a11y.is_some() { ns.insert("a11y".to_string()); }
+                if !c.shortcuts.is_empty() { ns.insert("shortcuts".to_string()); }
+                if c.permissions.is_some() { ns.insert("permissions".to_string()); }
+                if !c.gestures.is_empty() { ns.insert("gesture".to_string()); }
+                if c.on_destroy.is_some() { ns.insert("lifecycle".to_string()); }
+                check_exprs_in_component(c, &mut ns);
             }
             Item::Store(s) => {
-                if !s.selectors.is_empty() {
-                    modules.insert("atomic".to_string());
-                }
+                if !s.selectors.is_empty() { ns.insert("state".to_string()); }
                 for field in &s.signals {
-                    if field.atomic {
-                        modules.insert("atomic".to_string());
-                    }
+                    if field.atomic { ns.insert("state".to_string()); }
                 }
             }
             Item::LazyComponent(lazy) => {
-                modules.insert("loader".to_string());
-                if lazy.component.permissions.is_some() {
-                    modules.insert("permissions".to_string());
-                }
-                if !lazy.component.gestures.is_empty() {
-                    modules.insert("pwa".to_string());
-                }
-                if lazy.component.on_destroy.is_some() {
-                    modules.insert("lifecycle".to_string());
-                }
-                check_exprs_in_component(&lazy.component, &mut modules);
+                ns.insert("loader".to_string());
+                if lazy.component.permissions.is_some() { ns.insert("permissions".to_string()); }
+                if !lazy.component.gestures.is_empty() { ns.insert("gesture".to_string()); }
+                if lazy.component.on_destroy.is_some() { ns.insert("lifecycle".to_string()); }
+                check_exprs_in_component(&lazy.component, &mut ns);
             }
             _ => {}
         }
     }
 
-    modules
+    ns
 }
 
-fn check_exprs_in_component(component: &Component, modules: &mut HashSet<String>) {
+/// Legacy API — returns the same result as detect_required_namespaces.
+/// Kept for backward compatibility with existing build tooling.
+pub fn detect_required_modules(program: &Program) -> HashSet<String> {
+    detect_required_namespaces(program)
+}
+
+fn check_exprs_in_component(component: &Component, ns: &mut HashSet<String>) {
     for method in &component.methods {
-        check_exprs_in_block(&method.body, modules);
+        check_exprs_in_block(&method.body, ns);
     }
 }
 
-fn check_exprs_in_block(block: &Block, modules: &mut HashSet<String>) {
+fn check_exprs_in_block(block: &Block, ns: &mut HashSet<String>) {
     for stmt in &block.stmts {
-        check_exprs_in_stmt(stmt, modules);
+        check_exprs_in_stmt(stmt, ns);
     }
 }
 
-fn check_exprs_in_stmt(stmt: &Stmt, modules: &mut HashSet<String>) {
+fn check_exprs_in_stmt(stmt: &Stmt, ns: &mut HashSet<String>) {
     match stmt {
-        Stmt::Expr(expr) | Stmt::Return(Some(expr)) => {
-            check_expr(expr, modules);
-        }
-        Stmt::Let { value, .. } => {
-            check_expr(value, modules);
-        }
-        Stmt::Signal { value, .. } => {
-            check_expr(value, modules);
-        }
-        Stmt::LetDestructure { value, .. } => {
-            check_expr(value, modules);
-        }
-        Stmt::Yield(expr) => {
-            check_expr(expr, modules);
-        }
+        Stmt::Expr(expr) | Stmt::Return(Some(expr)) => { check_expr(expr, ns); }
+        Stmt::Let { value, .. } => { check_expr(value, ns); }
+        Stmt::Signal { value, .. } => { check_expr(value, ns); }
+        Stmt::LetDestructure { value, .. } => { check_expr(value, ns); }
+        Stmt::Yield(expr) => { check_expr(expr, ns); }
         Stmt::Return(None) => {}
     }
 }
 
-fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
+fn check_expr(expr: &Expr, ns: &mut HashSet<String>) {
     match expr {
         Expr::Spawn { body, .. } => {
-            modules.insert("worker".to_string());
-            check_exprs_in_block(body, modules);
+            ns.insert("worker".to_string());
+            check_exprs_in_block(body, ns);
         }
         Expr::Parallel { tasks, .. } => {
-            modules.insert("worker".to_string());
-            for task in tasks {
-                check_expr(task, modules);
-            }
+            ns.insert("worker".to_string());
+            for task in tasks { check_expr(task, ns); }
         }
-        Expr::Env { .. } => {
-            modules.insert("env".to_string());
-        }
+        Expr::Env { .. } => { ns.insert("env".to_string()); }
         Expr::Trace { body, .. } => {
-            modules.insert("trace".to_string());
-            check_exprs_in_block(body, modules);
+            ns.insert("trace".to_string());
+            check_exprs_in_block(body, ns);
         }
-        Expr::Flag { .. } => {
-            modules.insert("flags".to_string());
-        }
-        Expr::Download { .. } => {
-            modules.insert("pdf".to_string());
-        }
-        Expr::DynamicImport { .. } => {
-            modules.insert("loader".to_string());
-        }
+        Expr::Flag { .. } => { ns.insert("flags".to_string()); }
+        Expr::Download { .. } => { ns.insert("io".to_string()); }
+        Expr::DynamicImport { .. } => { ns.insert("loader".to_string()); }
         Expr::VirtualList { items, item_height, template, .. } => {
-            modules.insert("virtual".to_string());
-            check_expr(items, modules);
-            check_expr(item_height, modules);
-            check_expr(template, modules);
+            ns.insert("virtual".to_string());
+            check_expr(items, ns);
+            check_expr(item_height, ns);
+            check_expr(template, ns);
         }
-        Expr::Fetch { .. } => { /* core handles fetch */ }
-        // Detect JS runtime module needs.
-        // NOTE: Most std lib features (crypto, BigDecimal, collections, url, mask,
-        // search, pagination logic) are pure WASM — compiled from Rust into the
-        // binary. They do NOT need JS runtime modules.
-        // Only features that need browser APIs get JS modules:
-        // NOTE: Most std lib features are pure WASM — compiled from Rust into the
-        // binary. They do NOT need JS runtime modules. Features that need browser
-        // APIs use the existing core.js syscalls (DOM, timers, etc.).
-        // No std lib feature has its own JS module.
+        Expr::Fetch { .. } => { ns.insert("http".to_string()); }
         Expr::FnCall { callee, args, .. } => {
-            // Detect features that need specific JS runtime modules (non-std-lib)
             if let Expr::FieldAccess { object, .. } = &**callee {
-                if let Expr::Ident(ref ns) = **object {
-                    match ns.as_str() {
-                        "theme" => { modules.insert("theme".to_string()); }
-                        "auth" => { modules.insert("auth".to_string()); }
-                        "upload" => { modules.insert("upload".to_string()); }
-                        "db" => { modules.insert("db".to_string()); }
-                        "animate" => { modules.insert("animate".to_string()); }
-                        "responsive" => { modules.insert("responsive".to_string()); }
-                        // ALL std lib namespaces are pure WASM — no JS modules:
-                        // format, toast, skeleton, collections, url, mask, search,
-                        // pagination, data_table, datepicker, combobox, chart, editor,
-                        // image, csv, maps, syntax, media, qr, share, wizard,
-                        // debounce, throttle, crypto, BigDecimal, clipboard
-                        _ => {}
+                if let Expr::Ident(ref name) = **object {
+                    match name.as_str() {
+                        "theme" => { ns.insert("theme".to_string()); }
+                        "auth" => { ns.insert("auth".to_string()); }
+                        "upload" => { ns.insert("upload".to_string()); }
+                        "db" => { ns.insert("db".to_string()); }
+                        "animate" => { ns.insert("animate".to_string()); }
+                        "responsive" => { ns.insert("responsive".to_string()); }
+                        "clipboard" => { ns.insert("clipboard".to_string()); }
+                        "share" => { ns.insert("share".to_string()); }
+                        "storage" => { ns.insert("webapi".to_string()); }
+                        _ => {} // std lib namespaces are pure WASM — no JS imports
                     }
                 }
             }
-            check_expr(callee, modules);
-            for arg in args {
-                check_expr(arg, modules);
-            }
+            check_expr(callee, ns);
+            for arg in args { check_expr(arg, ns); }
         }
         Expr::MethodCall { object, args, .. } => {
             if let Expr::Ident(ref name) = **object {
                 match name.as_str() {
-                    "clipboard" => { modules.insert("clipboard".to_string()); }
-                    // crypto is pure WASM now — no JS module needed
+                    "clipboard" => { ns.insert("clipboard".to_string()); }
                     _ => {}
                 }
             }
-            check_expr(object, modules);
-            for arg in args {
-                check_expr(arg, modules);
-            }
+            check_expr(object, ns);
+            for arg in args { check_expr(arg, ns); }
         }
         // Recurse into sub-expressions
-        Expr::Binary { left, right, .. } => {
-            check_expr(left, modules);
-            check_expr(right, modules);
-        }
-        Expr::Unary { operand, .. } => {
-            check_expr(operand, modules);
-        }
-        Expr::FieldAccess { object, .. } => {
-            check_expr(object, modules);
-        }
-        Expr::Index { object, index, .. } => {
-            check_expr(object, modules);
-            check_expr(index, modules);
-        }
+        Expr::Binary { left, right, .. } => { check_expr(left, ns); check_expr(right, ns); }
+        Expr::Unary { operand, .. } => { check_expr(operand, ns); }
+        Expr::FieldAccess { object, .. } => { check_expr(object, ns); }
+        Expr::Index { object, index, .. } => { check_expr(object, ns); check_expr(index, ns); }
         Expr::If { condition, then_block, else_block, .. } => {
-            check_expr(condition, modules);
-            check_exprs_in_block(then_block, modules);
-            if let Some(eb) = else_block {
-                check_exprs_in_block(eb, modules);
-            }
+            check_expr(condition, ns);
+            check_exprs_in_block(then_block, ns);
+            if let Some(eb) = else_block { check_exprs_in_block(eb, ns); }
         }
         Expr::Match { subject, arms, .. } => {
-            check_expr(subject, modules);
-            for arm in arms {
-                check_expr(&arm.body, modules);
-            }
+            check_expr(subject, ns);
+            for arm in arms { check_expr(&arm.body, ns); }
         }
-        Expr::For { iterator, body, .. } => {
-            check_expr(iterator, modules);
-            check_exprs_in_block(body, modules);
-        }
-        Expr::While { condition, body, .. } => {
-            check_expr(condition, modules);
-            check_exprs_in_block(body, modules);
-        }
-        Expr::Block(block) => {
-            check_exprs_in_block(block, modules);
-        }
-        Expr::Assign { target, value, .. } => {
-            check_expr(target, modules);
-            check_expr(value, modules);
-        }
-        Expr::Await(inner) => {
-            check_expr(inner, modules);
-        }
-        Expr::TryCatch { body, catch_body, .. } => {
-            check_expr(body, modules);
-            check_expr(catch_body, modules);
-        }
-        Expr::Closure { body, .. } => {
-            check_expr(body, modules);
-        }
+        Expr::For { iterator, body, .. } => { check_expr(iterator, ns); check_exprs_in_block(body, ns); }
+        Expr::While { condition, body, .. } => { check_expr(condition, ns); check_exprs_in_block(body, ns); }
+        Expr::Block(block) => { check_exprs_in_block(block, ns); }
+        Expr::Assign { target, value, .. } => { check_expr(target, ns); check_expr(value, ns); }
+        Expr::Await(inner) => { check_expr(inner, ns); }
+        Expr::TryCatch { body, catch_body, .. } => { check_expr(body, ns); check_expr(catch_body, ns); }
+        Expr::Closure { body, .. } => { check_expr(body, ns); }
         Expr::Borrow(inner) | Expr::BorrowMut(inner) | Expr::Try(inner) | Expr::Stream { source: inner } => {
-            check_expr(inner, modules);
+            check_expr(inner, ns);
         }
-        Expr::Suspend { fallback, body, .. } => {
-            check_expr(fallback, modules);
-            check_expr(body, modules);
-        }
+        Expr::Suspend { fallback, body, .. } => { check_expr(fallback, ns); check_expr(body, ns); }
         Expr::Send { channel, value, .. } => {
-            modules.insert("worker".to_string());
-            check_expr(channel, modules);
-            check_expr(value, modules);
+            ns.insert("worker".to_string());
+            check_expr(channel, ns); check_expr(value, ns);
         }
         Expr::Receive { channel, .. } => {
-            modules.insert("worker".to_string());
-            check_expr(channel, modules);
+            ns.insert("worker".to_string());
+            check_expr(channel, ns);
         }
-        Expr::Channel { .. } => {
-            modules.insert("worker".to_string());
-        }
+        Expr::Channel { .. } => { ns.insert("worker".to_string()); }
         _ => {}
     }
 }
 
-/// Format the detected modules as a comma-separated string suitable
-/// for passing to `build-runtime.js --modules`.
+/// Format detected namespaces as a comma-separated string for diagnostics.
 pub fn modules_to_string(modules: &HashSet<String>) -> String {
     let mut sorted: Vec<&String> = modules.iter().collect();
     sorted.sort();
@@ -315,9 +202,11 @@ mod tests {
     #[test]
     fn test_core_always_included() {
         let program = Program { items: vec![] };
-        let modules = detect_required_modules(&program);
-        assert!(modules.contains("core"));
-        assert_eq!(modules.len(), 1);
+        let ns = detect_required_namespaces(&program);
+        assert!(ns.contains("dom"));
+        assert!(ns.contains("mem"));
+        assert!(ns.contains("string"));
+        assert_eq!(ns.len(), 3);
     }
 
     #[test]
@@ -340,9 +229,9 @@ mod tests {
                 span: empty_span(),
             })],
         };
-        let modules = detect_required_modules(&program);
-        assert!(modules.contains("core"));
-        assert!(modules.contains("seo"));
+        let ns = detect_required_namespaces(&program);
+        assert!(ns.contains("dom"));
+        assert!(ns.contains("seo"));
     }
 
     #[test]
@@ -355,8 +244,8 @@ mod tests {
                 span: empty_span(),
             })],
         };
-        let modules = detect_required_modules(&program);
-        assert!(modules.contains("contract"));
+        let ns = detect_required_namespaces(&program);
+        assert!(ns.contains("contract"));
     }
 
     #[test]
@@ -374,17 +263,17 @@ mod tests {
                 span: empty_span(),
             })],
         };
-        let modules = detect_required_modules(&program);
-        assert!(modules.contains("form"));
+        let ns = detect_required_namespaces(&program);
+        assert!(ns.contains("form"));
     }
 
     #[test]
     fn test_modules_to_string() {
-        let mut modules = HashSet::new();
-        modules.insert("core".to_string());
-        modules.insert("seo".to_string());
-        modules.insert("form".to_string());
-        let result = modules_to_string(&modules);
-        assert_eq!(result, "core,form,seo");
+        let mut ns = HashSet::new();
+        ns.insert("dom".to_string());
+        ns.insert("seo".to_string());
+        ns.insert("form".to_string());
+        let result = modules_to_string(&ns);
+        assert_eq!(result, "dom,form,seo");
     }
 }

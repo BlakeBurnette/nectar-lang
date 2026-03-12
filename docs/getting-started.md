@@ -89,16 +89,16 @@ Create an `index.html` file:
 <head><title>My Nectar App</title></head>
 <body>
   <div id="app"></div>
-  <script src="nectar-runtime.js"></script>
+  <script src="core.js"></script>
   <script>
-    const runtime = new NectarRuntime();
-    runtime.mount('hello.wasm', document.getElementById('app'));
+    import { instantiate } from './core.js';
+    instantiate('hello.wasm').then(inst => inst.exports.main());
   </script>
 </body>
 </html>
 ```
 
-Copy `runtime/nectar-runtime.js` alongside your HTML file, serve it with any static server, and open it in a browser.
+Copy `runtime/modules/core.js` alongside your HTML file, serve it with any static server, and open it in a browser.
 
 Or use the built-in dev server:
 
