@@ -720,6 +720,11 @@ impl Checker {
             Expr::Flag { name, .. } => {
                 self.check_expr(name, span);
             }
+            Expr::VirtualList { items, item_height, template, .. } => {
+                self.check_expr(items, span);
+                self.check_expr(item_height, span);
+                self.check_expr(template, span);
+            }
         }
     }
 

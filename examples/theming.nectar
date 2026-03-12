@@ -1,0 +1,60 @@
+// theming.nectar — Opt-in theming system
+//
+// The `theme` keyword defines design tokens for light and dark modes.
+// The compiler generates CSS custom properties and a toggle mechanism.
+// If you don't use `theme`, it doesn't exist in your output.
+
+theme AppTheme {
+    light {
+        bg: "#ffffff",
+        text: "#1a1a1a",
+        primary: "#2563eb",
+        surface: "#f8fafc",
+        border: "#e2e8f0",
+    }
+
+    dark {
+        bg: "#0f172a",
+        text: "#e2e8f0",
+        primary: "#60a5fa",
+        surface: "#1e293b",
+        border: "#334155",
+    }
+
+    // "auto" respects prefers-color-scheme by default
+    default: "auto",
+}
+
+// --- Using theme tokens in components ---
+// Reference tokens with var() — they resolve to CSS custom properties.
+
+component Header() {
+    render {
+        <header style="background: var(--bg); color: var(--text); border-bottom: 1px solid var(--border);">
+            <h1 style="color: var(--primary);">"My App"</h1>
+        </header>
+    }
+}
+
+// --- Theme toggle ---
+// The compiler generates a toggle function you can bind to a button.
+
+component ThemeToggle() {
+    render {
+        <button on:click={theme.toggle}>
+            "Toggle Dark Mode"
+        </button>
+    }
+}
+
+// --- What the compiler generates ---
+//
+// 1. CSS custom properties on :root and [data-theme="dark"]
+// 2. A tiny runtime (~200 bytes) that:
+//    - Reads prefers-color-scheme on first load
+//    - Persists choice to localStorage
+//    - Exposes theme.toggle() and theme.set("light"|"dark"|"auto")
+// 3. Zero flash of wrong theme — CSS handles the default,
+//    JS only runs for explicit overrides
+//
+// If you never use `theme`, none of this code is emitted.

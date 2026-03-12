@@ -220,6 +220,9 @@ impl Formatter {
             Item::Upload(_) => {}
             Item::Db(_) => {}
             Item::Cache(_) => {}
+            Item::Breakpoints(_) => {}
+            Item::Theme(_) => {}
+            Item::Animation(_) => {}
         }
     }
 
@@ -1089,6 +1092,9 @@ impl Formatter {
             Expr::Flag { name, .. } => {
                 format!("flag({})", self.format_expr_inner(name, depth))
             }
+            Expr::VirtualList { items, item_height, template, .. } => {
+                format!("virtual_list({}, {}, {})", self.format_expr_inner(items, depth), self.format_expr_inner(item_height, depth), self.format_expr_inner(template, depth))
+            }
         }
     }
 
@@ -1478,6 +1484,8 @@ mod tests {
                 error_boundary: None,
                 chunk: None,
                 on_destroy: None,
+                a11y: None,
+                shortcuts: vec![],
                 span: dummy_span(),
             })],
         };

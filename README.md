@@ -45,6 +45,15 @@ Modern web development forces you to choose: **safety** (Rust, but no UI story),
 | Feature flags | LaunchDarkly / manual | Manual | `flag()` with compile-time DCE |
 | Environment vars | dotenv / NEXT_PUBLIC_ | getenv() | `env()` with compile-time validation |
 | Data caching | React Query / SWR (13KB+) | N/A | `cache` keyword with deduplication, SWR, optimistic updates — 0KB |
+| Accessibility | Manual ARIA / axe-core | Manual | Automatic — compiler generates ARIA, roles, focus, skip-nav |
+| Cryptography | WebCrypto + wrappers | N/A | Built-in `crypto` namespace — hash, encrypt, sign, random |
+| Theming | CSS-in-JS / Tailwind dark: | Manual | `theme` keyword — light/dark/auto, CSS custom properties |
+| Responsive | Media queries + JS | Breakpoint libs | `fluid()` → CSS `clamp()`, `breakpoints` keyword — zero JS |
+| Clipboard | navigator.clipboard | N/A | `clipboard.copy/paste` builtins |
+| Drag & drop | react-dnd / dnd-kit | Sortable.js | `draggable`/`droppable` keywords — touch + keyboard + a11y |
+| Animations | Framer Motion / GSAP | N/A | `spring`, `keyframes`, `stagger` — physics-based, GPU-accelerated |
+| Keyboard shortcuts | Mousetrap / hotkeys | N/A | `shortcut` keyword — cross-platform, scoped, accessible |
+| Virtualized lists | react-window / tanstack-virtual | N/A | `virtual` keyword — 100K items, ~30 DOM nodes |
 
 Nectar was designed from the ground up with these principles:
 
@@ -1275,53 +1284,156 @@ fn go_home(&self) {
 }
 ```
 
-### Animations & Transitions
+### Animations
+
+Spring physics, keyframes, and stagger — no Framer Motion, no GSAP. All animations respect `prefers-reduced-motion` automatically.
 
 ```nectar
-component AnimatedCard() {
-    // CSS transitions on state changes
-    transition opacity 300ms ease-in-out;
-    transition transform 200ms ease;
+component Modal() {
+    let mut visible: bool = false;
 
-    // Trigger animations imperatively
-    fn on_enter(&self) {
-        animate(self.card_ref, "fadeIn");
+    spring enter {
+        from: { opacity: 0.0, transform: "scale(0.95)" },
+        to: { opacity: 1.0, transform: "scale(1)" },
+        stiffness: 300,
+        damping: 25,
     }
 
-    style {
-        .card {
-            opacity: "1";
-            transform: "translateY(0)";
-        }
+    stagger list_enter {
+        from: { opacity: 0.0, transform: "translateY(20px)" },
+        to: { opacity: 1.0, transform: "translateY(0)" },
+        delay: 50,
+        spring: { stiffness: 200, damping: 20 },
     }
 
-    render {
-        <div class="card">
-            <p>"Animated content"</p>
-        </div>
+    keyframes spin {
+        from: { transform: "rotate(0deg)" },
+        to: { transform: "rotate(360deg)" },
+        duration: 1000,
+        iteration: "infinite",
     }
 }
 ```
+
+Springs use requestAnimationFrame with physics simulation. Keyframes compile to `@keyframes` CSS rules (GPU-accelerated). Stagger assigns incremental delays to list children. See [`examples/animations.nectar`](examples/animations.nectar).
 
 ### Accessibility
 
-Nectar has first-class support for ARIA attributes, roles, and focus management.
+Nectar generates accessible output **automatically**. The compiler adds ARIA attributes, roles, keyboard navigation, focus management, and screen reader announcements without developer effort.
+
+Three modes control the behavior:
 
 ```nectar
-component Modal(title: String) {
+// Auto (default) — compiler controls the semantic layer
+component Card() {
     render {
-        <div role="dialog" aria-label={self.title}>
-            <h2>{self.title}</h2>
-            <div role="document">
-                <p>"Modal content"</p>
-            </div>
-            <button aria-label="Close" on:click={self.close}>"X"</button>
-        </div>
+        // Compiler sees clickable div → adds role="button", tabindex, keydown handler
+        <div on:click={self.select}>"Click me"</div>
+    }
+}
+
+// Hybrid — developer overrides specific attributes, compiler fills the rest
+component Feed() {
+    a11y hybrid;
+    render {
+        <div role="feed" aria-label="Results">...</div>
+    }
+}
+
+// Manual — developer controls everything, compiler only warns
+component Canvas() {
+    a11y manual;
+    render {
+        <canvas role="img" aria-label="Chart">...</canvas>
     }
 }
 ```
 
-The runtime provides built-in helpers: `setAriaAttribute`, `setRole`, `manageFocus`, `announceToScreenReader`, `trapFocus`, and `releaseFocusTrap`.
+Auto-generated: skip-nav links, focus trapping in modals, `aria-live` for dynamic content, landmark roles, heading hierarchy validation. Developer's explicit intent always wins over compiler defaults. See [`examples/a11y.nectar`](examples/a11y.nectar).
+
+### Cryptography
+
+WebCrypto primitives as a language namespace — no npm packages, no CDN scripts.
+
+```nectar
+let digest = crypto.sha256("data");
+let key = crypto.derive_key("password", "salt");
+let encrypted = crypto.encrypt(key, "plaintext");
+let id = crypto.random_uuid();
+let sig = crypto.sign(private_key, data);
+```
+
+Combines with `secret` types: values derived from secrets are tracked by the compiler. See [`examples/crypto.nectar`](examples/crypto.nectar).
+
+### Theming
+
+Opt-in light/dark/auto theming via the `theme` keyword. Generates CSS custom properties and a tiny toggle runtime (~200 bytes).
+
+```nectar
+theme AppTheme {
+    light { bg: "#ffffff", text: "#1a1a1a", primary: "#2563eb" }
+    dark  { bg: "#0f172a", text: "#e2e8f0", primary: "#60a5fa" }
+    default: "auto",
+}
+```
+
+Zero flash of wrong theme — CSS handles the default. If you never use `theme`, none of this code is emitted. See [`examples/theming.nectar`](examples/theming.nectar).
+
+### Responsive Design
+
+CSS-native responsive primitives. Zero JavaScript. Zero layout shift.
+
+```nectar
+breakpoints App { sm: 640, md: 768, lg: 1024, xl: 1280 }
+
+// fluid() compiles to CSS clamp() — smooth scaling
+<h1 style={f"font-size: {fluid(24, 64)};"}>...</h1>
+```
+
+`fluid(min, max)` compiles to `clamp()`. Grid layouts use CSS Grid with `auto-fill`. No ResizeObserver, no matchMedia listeners. See [`examples/responsive.nectar`](examples/responsive.nectar).
+
+### Clipboard
+
+```nectar
+clipboard.copy("text to copy");
+let content = clipboard.paste();
+clipboard.copy_image(image_url);
+```
+
+Type-safe clipboard access. See [`examples/clipboard.nectar`](examples/clipboard.nectar).
+
+### Drag and Drop
+
+```nectar
+<div draggable data-task={task}>{task}</div>
+<div droppable on:drop={self.handle_drop}>...</div>
+```
+
+Touch + mouse + keyboard support. Accessible by default (aria-grabbed, aria-dropeffect). See [`examples/dnd.nectar`](examples/dnd.nectar).
+
+### Keyboard Shortcuts
+
+```nectar
+component Editor() {
+    shortcut "Cmd+S" => self.save;
+    shortcut "Cmd+Z" => self.undo;
+    shortcut "Escape" => self.close;
+}
+```
+
+Cross-platform (Cmd → Ctrl on non-Mac). Scoped to component DOM. See [`examples/shortcuts.nectar`](examples/shortcuts.nectar).
+
+### Virtualized Lists
+
+Render 100K+ items with ~30 DOM nodes. The `virtual` keyword handles windowing, recycling, and scroll detection.
+
+```nectar
+<virtual list={self.logs} item_height={32} buffer={10}>
+    {|log, index| { <div>{log}</div> }}
+</virtual>
+```
+
+No react-window. No tanstack-virtual. Just one keyword. See [`examples/virtual-list.nectar`](examples/virtual-list.nectar).
 
 ### Form Binding
 
@@ -1702,6 +1814,15 @@ The `examples/` directory contains complete programs demonstrating Nectar's feat
 | [`database.nectar`](examples/database.nectar) | Local database -- `db` keyword, IndexedDB abstraction, declarative schema |
 | [`observability.nectar`](examples/observability.nectar) | Observability -- `trace` blocks, `flag()` feature flags, performance metrics |
 | [`cache.nectar`](examples/cache.nectar) | Data caching — `cache` keyword, queries, mutations, SWR, optimistic updates |
+| [`a11y.nectar`](examples/a11y.nectar) | Accessibility — auto/hybrid/manual modes, ARIA generation, skip-nav |
+| [`crypto.nectar`](examples/crypto.nectar) | Cryptography — hash, encrypt, sign, random, secret integration |
+| [`theming.nectar`](examples/theming.nectar) | Theming — `theme` keyword, light/dark/auto, CSS custom properties |
+| [`responsive.nectar`](examples/responsive.nectar) | Responsive — `fluid()`, `breakpoints`, CSS-native, zero JS |
+| [`clipboard.nectar`](examples/clipboard.nectar) | Clipboard — copy, paste, copy_image builtins |
+| [`dnd.nectar`](examples/dnd.nectar) | Drag & drop — `draggable`/`droppable`, touch + keyboard |
+| [`animations.nectar`](examples/animations.nectar) | Animations — `spring`, `keyframes`, `stagger`, physics-based |
+| [`shortcuts.nectar`](examples/shortcuts.nectar) | Keyboard shortcuts — `shortcut` keyword, cross-platform |
+| [`virtual-list.nectar`](examples/virtual-list.nectar) | Virtualized lists — `virtual` keyword, 100K items, ~30 DOM nodes |
 
 Compile any example:
 

@@ -23,8 +23,11 @@ pub fn detect_required_modules(program: &Program) -> HashSet<String> {
             Item::Contract(_) => {
                 modules.insert("contract".to_string());
             }
-            Item::App(_) => {
+            Item::App(app) => {
                 modules.insert("pwa".to_string());
+                if app.a11y.is_some() {
+                    modules.insert("a11y".to_string());
+                }
             }
             Item::Embed(_) => {
                 modules.insert("embed".to_string());
@@ -44,7 +47,22 @@ pub fn detect_required_modules(program: &Program) -> HashSet<String> {
             Item::Db(_) => {
                 modules.insert("db".to_string());
             }
+            Item::Breakpoints(_) => {
+                modules.insert("responsive".to_string());
+            }
+            Item::Animation(_) => {
+                modules.insert("animate".to_string());
+            }
+            Item::Theme(_) => {
+                modules.insert("theme".to_string());
+            }
             Item::Component(c) => {
+                if c.a11y.is_some() {
+                    modules.insert("a11y".to_string());
+                }
+                if !c.shortcuts.is_empty() {
+                    modules.insert("shortcuts".to_string());
+                }
                 if c.permissions.is_some() {
                     modules.insert("permissions".to_string());
                 }
@@ -147,6 +165,12 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
         Expr::DynamicImport { .. } => {
             modules.insert("loader".to_string());
         }
+        Expr::VirtualList { items, item_height, template, .. } => {
+            modules.insert("virtual".to_string());
+            check_expr(items, modules);
+            check_expr(item_height, modules);
+            check_expr(template, modules);
+        }
         Expr::Fetch { .. } => { /* core handles fetch */ }
         // Recurse into sub-expressions
         Expr::Binary { left, right, .. } => {
@@ -160,6 +184,14 @@ fn check_expr(expr: &Expr, modules: &mut HashSet<String>) {
             check_expr(object, modules);
         }
         Expr::MethodCall { object, args, .. } => {
+            if let Expr::Ident(ref name) = **object {
+                if name == "clipboard" {
+                    modules.insert("clipboard".to_string());
+                }
+                if name == "crypto" {
+                    modules.insert("crypto".to_string());
+                }
+            }
             check_expr(object, modules);
             for arg in args {
                 check_expr(arg, modules);

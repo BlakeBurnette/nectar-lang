@@ -1,0 +1,107 @@
+// a11y.nectar — Automatic accessibility in Nectar
+//
+// Nectar generates accessible output by default. The compiler adds ARIA
+// attributes, roles, keyboard navigation, focus management, and screen
+// reader announcements — without the developer writing any of it.
+//
+// Three modes:
+//   auto    — compiler controls the semantic layer entirely (default)
+//   hybrid  — developer can override specific ARIA attributes
+//   manual  — developer controls everything, compiler only warns
+
+// --- Auto mode (default) ---
+// The compiler sees a clickable div and generates the correct role,
+// tabindex, keyboard handler, and focus styling automatically.
+
+component ProductCard(name: String, price: f64) {
+    fn add_to_cart(&self) {
+        // ...
+    }
+
+    render {
+        <div class="card" on:click={self.add_to_cart}>
+            <img src="/products/widget.jpg" />
+            <h3>{self.name}</h3>
+            <p>{f"${self.price}"}</p>
+            <button>"Add to Cart"</button>
+        </div>
+    }
+}
+
+// Compiler output (auto mode):
+//   - img gets alt="" (decorative) or alt from context
+//   - clickable div gets role="button", tabindex="0", keydown Enter/Space handler
+//   - button already semantic — no changes needed
+//   - focus-visible outline added via generated CSS
+
+// --- Hybrid mode ---
+// Developer overrides specific attributes; compiler fills the rest.
+
+component SearchResults(results: Vec<String>) {
+    a11y hybrid;
+
+    render {
+        <div role="feed" aria-label="Search results">
+            {for item in self.results {
+                <article>
+                    <p>{item}</p>
+                </article>
+            }}
+        </div>
+    }
+}
+
+// Developer set role="feed" and aria-label — compiler respects those.
+// Compiler still adds: aria-live="polite" on dynamic content,
+// focus management when results update, screen reader announcement.
+
+// --- Manual mode ---
+// Developer controls everything. Compiler only emits warnings.
+
+component CustomCanvas() {
+    a11y manual;
+
+    render {
+        <canvas width="800" height="600" role="img" aria-label="Data visualization">
+        </canvas>
+    }
+}
+
+// --- Live regions ---
+// Dynamic content that updates is automatically announced to screen readers.
+
+component NotificationBanner() {
+    let mut message: String = "";
+
+    fn show(&mut self, msg: String) {
+        self.message = msg;
+        // Compiler auto-adds aria-live="assertive" because this is
+        // a visible text change triggered by application logic.
+    }
+
+    render {
+        <div class="banner">
+            <p>{self.message}</p>
+        </div>
+    }
+}
+
+// --- Skip navigation ---
+// Compiler auto-generates skip-to-content links for page-level components.
+
+page Dashboard {
+    meta {
+        title: "Dashboard",
+    }
+
+    render {
+        <nav>"..."</nav>
+        <main>
+            <h1>"Dashboard"</h1>
+        </main>
+    }
+}
+
+// Output includes:
+//   <a class="skip-link" href="#main-content">Skip to content</a>
+//   <main id="main-content" tabindex="-1">...</main>

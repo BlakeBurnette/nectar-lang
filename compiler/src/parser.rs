@@ -102,6 +102,11 @@ impl Parser {
                         | TokenKind::Upload
                         | TokenKind::Db
                         | TokenKind::Cache
+                        | TokenKind::Breakpoint
+                        | TokenKind::Theme
+                        | TokenKind::Spring
+                        | TokenKind::Stagger
+                        | TokenKind::Keyframes
                         | TokenKind::Pub => break,
                         _ => { self.advance(); }
                     }
@@ -188,6 +193,11 @@ impl Parser {
             TokenKind::Upload => Ok(Item::Upload(self.parse_upload(is_pub)?)),
             TokenKind::Db => Ok(Item::Db(self.parse_db(is_pub)?)),
             TokenKind::Cache => Ok(Item::Cache(self.parse_cache(is_pub)?)),
+            TokenKind::Breakpoint => Ok(Item::Breakpoints(self.parse_breakpoints_def()?)),
+            TokenKind::Theme => Ok(Item::Theme(self.parse_theme(is_pub)?)),
+            TokenKind::Spring => Ok(Item::Animation(self.parse_spring_block(is_pub)?)),
+            TokenKind::Keyframes => Ok(Item::Animation(self.parse_keyframes_block(is_pub)?)),
+            TokenKind::Stagger => Ok(Item::Animation(self.parse_stagger_block(is_pub)?)),
             TokenKind::MustUse => {
                 // must_use fn ...
                 self.advance();
@@ -199,7 +209,7 @@ impl Parser {
                 Ok(Item::LazyComponent(self.parse_lazy_component()?))
             }
             TokenKind::Test => Ok(Item::Test(self.parse_test_def()?)),
-            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, form, channel, embed, pdf, payment, auth, upload, cache, lazy, test)")),
+            _ => Err(self.error("Expected item (fn, component, struct, enum, impl, trait, use, mod, store, agent, router, contract, app, page, form, channel, embed, pdf, payment, auth, upload, cache, breakpoint, theme, spring, keyframes, stagger, lazy, test)")),
         }
     }
 
@@ -327,6 +337,8 @@ impl Parser {
         let mut error_boundary = None;
         let mut chunk = None;
         let mut on_destroy = None;
+        let mut a11y = None;
+        let mut shortcuts = Vec::new();
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
             match self.peek_kind() {
@@ -367,13 +379,43 @@ impl Parser {
                 TokenKind::Gesture => {
                     gestures.push(self.parse_gesture()?);
                 }
+                TokenKind::A11y => {
+                    self.advance();
+                    if self.match_token(&TokenKind::Manual) {
+                        a11y = Some(A11yMode::Manual);
+                    } else {
+                        // Check for "auto" as an identifier
+                        if let TokenKind::Ident(s) = self.peek_kind() {
+                            if s == "auto" {
+                                self.advance();
+                                a11y = Some(A11yMode::Auto);
+                            }
+                        } else {
+                            a11y = Some(A11yMode::Auto); // default to auto
+                        }
+                    }
+                    self.match_token(&TokenKind::Semicolon);
+                }
                 TokenKind::Ident(ref id) if id == "skeleton" => {
                     skeleton = Some(self.parse_skeleton_block()?);
                 }
                 TokenKind::Ident(ref id) if id == "error_boundary" => {
                     error_boundary = Some(self.parse_error_boundary()?);
                 }
-                _ => return Err(self.error("Expected let, signal, fn, chunk, style, transition, render, permissions, gesture, skeleton, or error_boundary in component")),
+                TokenKind::Shortcut => {
+                    self.advance();
+                    let shortcut_span = self.current_span();
+                    let keys = if let TokenKind::StringLit(s) = self.peek_kind() {
+                        let s = s.clone();
+                        self.advance();
+                        s
+                    } else {
+                        return Err(self.error("expected shortcut key string"));
+                    };
+                    let body = self.parse_block()?;
+                    shortcuts.push(ShortcutDef { keys, body, span: shortcut_span });
+                }
+                _ => return Err(self.error("Expected let, signal, fn, chunk, style, transition, render, permissions, gesture, a11y, shortcut, skeleton, or error_boundary in component")),
             }
         }
 
@@ -384,7 +426,7 @@ impl Parser {
             span,
         })?;
 
-        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, chunk, on_destroy, span })
+        Ok(Component { name, type_params, props, state, methods, styles, transitions, trait_bounds, render, gestures, permissions, skeleton, error_boundary, chunk, on_destroy, a11y, shortcuts, span })
     }
 
     fn parse_page(&mut self, is_pub: bool) -> Result<PageDef, ParseError> {
@@ -1341,6 +1383,7 @@ impl Parser {
         let mut offline = None;
         let mut push = None;
         let mut router = None;
+        let mut a11y = None;
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
             match self.peek_kind() {
@@ -1356,12 +1399,29 @@ impl Parser {
                 TokenKind::Router => {
                     router = Some(self.parse_router()?);
                 }
-                _ => return Err(self.error("Expected manifest, offline, push, or router in app")),
+                TokenKind::A11y => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    if self.match_token(&TokenKind::Manual) {
+                        a11y = Some(A11yMode::Manual);
+                    } else {
+                        if let TokenKind::Ident(s) = self.peek_kind() {
+                            if s == "auto" {
+                                self.advance();
+                                a11y = Some(A11yMode::Auto);
+                            }
+                        } else {
+                            a11y = Some(A11yMode::Auto);
+                        }
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+                _ => return Err(self.error("Expected manifest, offline, push, router, or a11y in app")),
             }
         }
 
         self.expect(&TokenKind::RightBrace)?;
-        Ok(AppDef { name, manifest, offline, push, router, is_pub, span })
+        Ok(AppDef { name, manifest, offline, push, router, a11y, is_pub, span })
     }
 
     /// Parse `manifest { name: "My App", short_name: "app", ... }`
@@ -2282,6 +2342,44 @@ impl Parser {
                     body: Box::new(try_body),
                     error_binding,
                     catch_body: Box::new(catch_body),
+                })
+            }
+            TokenKind::Virtual => {
+                // virtual list=expr item_height=expr { |item, index| ... }
+                self.advance();
+                let span = self.current_span();
+                let mut items = None;
+                let mut item_height = None;
+                let mut buffer = None;
+
+                // Parse key=value attributes until left brace
+                while !self.check(&TokenKind::LeftBrace) && !self.check(&TokenKind::Pipe) && !self.check(&TokenKind::PipePipe) && !self.is_at_end() {
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Equals)?;
+                    match key.as_str() {
+                        "list" => { items = Some(self.parse_expr()?); }
+                        "item_height" => { item_height = Some(self.parse_expr()?); }
+                        "buffer" => {
+                            if let TokenKind::Integer(n) = self.peek_kind() {
+                                buffer = Some(n as u32);
+                                self.advance();
+                            } else {
+                                return Err(self.error("Expected integer for buffer"));
+                            }
+                        }
+                        _ => { self.advance(); }
+                    }
+                    self.match_token(&TokenKind::Comma);
+                }
+
+                let template = self.parse_expr()?;
+
+                Ok(Expr::VirtualList {
+                    items: Box::new(items.unwrap_or(Expr::Ident("items".to_string()))),
+                    item_height: Box::new(item_height.unwrap_or(Expr::Integer(40))),
+                    template: Box::new(template),
+                    buffer,
+                    span,
                 })
             }
             TokenKind::Animate => {
@@ -3595,6 +3693,281 @@ impl Parser {
         }
         self.expect(&TokenKind::RightBrace)?;
         Ok(DbDef { name, version, stores, is_pub, span })
+    }
+
+    fn parse_breakpoints_def(&mut self) -> Result<BreakpointsDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Breakpoint)?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut breakpoints = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            if let TokenKind::Integer(n) = self.peek_kind() {
+                breakpoints.push((name, n as u32));
+                self.advance();
+            } else {
+                return Err(self.error("Expected integer value for breakpoint"));
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(BreakpointsDef { breakpoints, span })
+    }
+
+    /// Parse `theme Name { light { key: "val", ... } dark { ... } }` or
+    /// `theme Name { light { ... } dark: auto }` or
+    /// `theme Name { auto, primary: "#e94560" }`
+    fn parse_theme(&mut self, is_pub: bool) -> Result<ThemeDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Theme)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut light = None;
+        let mut dark = None;
+        let mut dark_auto = false;
+        let mut primary = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Ident(ref id) if id == "light" => {
+                    self.advance();
+                    self.expect(&TokenKind::LeftBrace)?;
+                    let mut entries = Vec::new();
+                    while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                        let key = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let val = self.parse_expr()?;
+                        entries.push((key, val));
+                        self.match_token(&TokenKind::Comma);
+                    }
+                    self.expect(&TokenKind::RightBrace)?;
+                    light = Some(entries);
+                }
+                TokenKind::Ident(ref id) if id == "dark" => {
+                    self.advance();
+                    if self.match_token(&TokenKind::Colon) {
+                        // dark: auto
+                        if let TokenKind::Ident(s) = self.peek_kind() {
+                            if s == "auto" {
+                                self.advance();
+                                dark_auto = true;
+                            }
+                        }
+                    } else {
+                        self.expect(&TokenKind::LeftBrace)?;
+                        let mut entries = Vec::new();
+                        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                            let key = self.expect_ident()?;
+                            self.expect(&TokenKind::Colon)?;
+                            let val = self.parse_expr()?;
+                            entries.push((key, val));
+                            self.match_token(&TokenKind::Comma);
+                        }
+                        self.expect(&TokenKind::RightBrace)?;
+                        dark = Some(entries);
+                    }
+                }
+                TokenKind::Ident(ref id) if id == "auto" => {
+                    self.advance();
+                    dark_auto = true;
+                    self.match_token(&TokenKind::Comma);
+                }
+                TokenKind::Ident(ref id) if id == "primary" => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    primary = Some(self.parse_expr()?);
+                    self.match_token(&TokenKind::Comma);
+                }
+                _ => return Err(self.error("Expected light, dark, auto, or primary in theme")),
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(ThemeDef { name, light, dark, dark_auto, primary, is_pub, span })
+    }
+
+    /// Parse `spring FadeIn { stiffness: 120, damping: 14, mass: 1, properties: ["opacity", "transform"] }`
+    fn parse_spring_block(&mut self, is_pub: bool) -> Result<AnimationBlockDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Spring)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut stiffness = None;
+        let mut damping = None;
+        let mut mass = None;
+        let mut properties = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "stiffness" => {
+                    if let TokenKind::Integer(n) = self.peek_kind() {
+                        stiffness = Some(n as f64);
+                        self.advance();
+                    } else if let TokenKind::Float(f) = self.peek_kind() {
+                        stiffness = Some(f);
+                        self.advance();
+                    }
+                }
+                "damping" => {
+                    if let TokenKind::Integer(n) = self.peek_kind() {
+                        damping = Some(n as f64);
+                        self.advance();
+                    } else if let TokenKind::Float(f) = self.peek_kind() {
+                        damping = Some(f);
+                        self.advance();
+                    }
+                }
+                "mass" => {
+                    if let TokenKind::Integer(n) = self.peek_kind() {
+                        mass = Some(n as f64);
+                        self.advance();
+                    } else if let TokenKind::Float(f) = self.peek_kind() {
+                        mass = Some(f);
+                        self.advance();
+                    }
+                }
+                "properties" => {
+                    self.expect(&TokenKind::LeftBracket)?;
+                    while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+                        if let TokenKind::StringLit(s) = self.peek_kind() {
+                            properties.push(s.clone());
+                            self.advance();
+                        } else {
+                            self.advance();
+                        }
+                        self.match_token(&TokenKind::Comma);
+                    }
+                    self.expect(&TokenKind::RightBracket)?;
+                }
+                _ => { self.advance(); }
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(AnimationBlockDef {
+            name,
+            kind: AnimationKind::Spring { stiffness, damping, mass, properties },
+            is_pub,
+            span,
+        })
+    }
+
+    /// Parse `keyframes SlideIn { 0% { ... } 100% { ... } duration: "300ms", easing: "ease-out" }`
+    fn parse_keyframes_block(&mut self, is_pub: bool) -> Result<AnimationBlockDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Keyframes)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut frames = Vec::new();
+        let mut duration = None;
+        let mut easing = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            if let TokenKind::Integer(_) = self.peek_kind() {
+                // Parse percentage: 0% { ... }
+                let pct_val = if let TokenKind::Integer(n) = self.advance().kind {
+                    n as f64
+                } else {
+                    0.0
+                };
+                self.expect(&TokenKind::Percent)?;
+                self.expect(&TokenKind::LeftBrace)?;
+                let mut props = Vec::new();
+                while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+                    let prop_name = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    let prop_val = self.parse_expr()?;
+                    props.push((prop_name, prop_val));
+                    self.match_token(&TokenKind::Comma);
+                }
+                self.expect(&TokenKind::RightBrace)?;
+                frames.push((pct_val, props));
+            } else if let TokenKind::Ident(_) = self.peek_kind() {
+                let key = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                match key.as_str() {
+                    "duration" => {
+                        if let TokenKind::StringLit(s) = self.peek_kind() {
+                            duration = Some(s.clone());
+                            self.advance();
+                        }
+                    }
+                    "easing" => {
+                        if let TokenKind::StringLit(s) = self.peek_kind() {
+                            easing = Some(s.clone());
+                            self.advance();
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+                self.match_token(&TokenKind::Comma);
+            } else {
+                self.advance();
+            }
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(AnimationBlockDef {
+            name,
+            kind: AnimationKind::Keyframes { frames, duration, easing },
+            is_pub,
+            span,
+        })
+    }
+
+    /// Parse `stagger ListAppear { animation: FadeIn, delay: "50ms" }`
+    fn parse_stagger_block(&mut self, is_pub: bool) -> Result<AnimationBlockDef, ParseError> {
+        let span = self.current_span();
+        self.expect(&TokenKind::Stagger)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LeftBrace)?;
+
+        let mut animation = String::new();
+        let mut delay = None;
+        let mut selector = None;
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "animation" => {
+                    animation = self.expect_ident()?;
+                }
+                "delay" => {
+                    if let TokenKind::StringLit(s) = self.peek_kind() {
+                        delay = Some(s.clone());
+                        self.advance();
+                    }
+                }
+                "selector" => {
+                    if let TokenKind::StringLit(s) = self.peek_kind() {
+                        selector = Some(s.clone());
+                        self.advance();
+                    }
+                }
+                _ => { self.advance(); }
+            }
+            self.match_token(&TokenKind::Comma);
+        }
+
+        self.expect(&TokenKind::RightBrace)?;
+        Ok(AnimationBlockDef {
+            name,
+            kind: AnimationKind::Stagger { animation, delay, selector },
+            is_pub,
+            span,
+        })
     }
 
     // === Helpers ===

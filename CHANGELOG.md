@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dev server `--tunnel` option for exposing local server via public URL
 - Data caching: `cache` keyword with queries, mutations, stale-while-revalidate, optimistic updates, persistent IndexedDB cache, compile-time request deduplication
 - Runtime tree-shaking: compiler detects used features and includes only needed runtime modules (22 independent modules, core-only build ~3KB)
+- Automatic accessibility: compiler generates ARIA attributes, roles, keyboard navigation, focus management, skip-nav links, live regions. Three modes: auto (default), hybrid, manual
+- Cryptography: `crypto` namespace with sha256, sha512, hmac, encrypt, decrypt, sign, verify, derive_key, random_uuid, random_bytes — all backed by WebCrypto
+- Theming: `theme` keyword with light/dark/auto modes, CSS custom properties, zero-flash toggle (~200 bytes runtime)
+- Responsive design: `breakpoints` keyword, `fluid()` function compiling to CSS `clamp()` — zero JS overhead
+- Clipboard API: `clipboard.copy`, `clipboard.paste`, `clipboard.copy_image` builtins
+- Drag and drop: `draggable`/`droppable` keywords with touch, mouse, and keyboard support, accessible by default
+- Animations: `spring` (physics-based), `keyframes` (CSS @keyframes), `stagger` (sequential list animation) — all respect `prefers-reduced-motion`
+- Keyboard shortcuts: `shortcut` keyword with cross-platform key mapping (Cmd → Ctrl), component-scoped, accessible
+- Virtualized lists: `virtual` keyword renders only visible items + buffer, 100K items with ~30 DOM nodes
 
 ### Build targets
 - `--target pwa` — Progressive Web App

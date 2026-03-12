@@ -1,0 +1,85 @@
+// responsive.nectar — CSS-native responsive design
+//
+// Nectar provides responsive primitives that compile to pure CSS.
+// Zero JavaScript. Zero layout shift. Zero compute cost.
+
+// --- Breakpoints definition ---
+// Define your breakpoints once; use them everywhere.
+
+breakpoints AppBreakpoints {
+    sm: 640,
+    md: 768,
+    lg: 1024,
+    xl: 1280,
+}
+
+// --- fluid() function ---
+// Compiles to CSS clamp() for smooth scaling between breakpoints.
+
+component HeroSection() {
+    render {
+        <section>
+            <h1 style={f"font-size: {fluid(24, 64)};"}>
+                "Build faster"
+            </h1>
+            <p style={f"font-size: {fluid(16, 24)}; max-width: {fluid(300, 800)}px;"}>
+                "Nectar compiles responsive values to CSS clamp()"
+            </p>
+        </section>
+    }
+}
+
+// fluid(24, 64) compiles to: clamp(1.5rem, 1rem + 2.5vw, 4rem)
+// Smooth scaling from 24px to 64px across the viewport range.
+
+// --- Responsive grid ---
+// layout: grid() compiles to CSS Grid — no JS resize observers.
+
+component ProductGrid() {
+    render {
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;">
+            <div>"Product 1"</div>
+            <div>"Product 2"</div>
+            <div>"Product 3"</div>
+            <div>"Product 4"</div>
+        </div>
+    }
+}
+
+// --- Breakpoint-conditional rendering ---
+// Show/hide content at specific breakpoints.
+
+component Navigation() {
+    render {
+        <nav>
+            // Desktop nav — hidden below lg
+            <div class="hidden-below-lg">
+                <a href="/home">"Home"</a>
+                <a href="/about">"About"</a>
+                <a href="/contact">"Contact"</a>
+            </div>
+
+            // Mobile hamburger — hidden above lg
+            <button class="hidden-above-lg">
+                "Menu"
+            </button>
+        </nav>
+    }
+}
+
+// --- Container queries ---
+// Components respond to their container, not the viewport.
+
+component Card() {
+    render {
+        <div class="card" style="container-type: inline-size;">
+            <div class="card-content">
+                <h3>"Responsive Card"</h3>
+                <p>"Layout adapts to container width, not viewport"</p>
+            </div>
+        </div>
+    }
+}
+
+// All of this compiles to pure CSS.
+// No ResizeObserver. No matchMedia listeners. No layout thrashing.

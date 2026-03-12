@@ -1,0 +1,61 @@
+// dnd.nectar — Drag and Drop
+//
+// First-class drag and drop with the `draggable` and `droppable` keywords.
+// No external libraries. The compiler generates optimized pointer event
+// handlers with touch support.
+
+component KanbanBoard() {
+    let mut columns: Vec<Vec<String>> = vec![
+        vec!["Task A", "Task B"],
+        vec!["Task C"],
+        vec![],
+    ];
+
+    render {
+        <div class="board" style="display: flex; gap: 1rem;">
+            {for (i, col) in self.columns.iter().enumerate() {
+                <div class="column" droppable on:drop={self.move_task(i)}>
+                    <h3>{f"Column {i}"}</h3>
+                    {for task in col {
+                        <div class="task" draggable data-task={task}>
+                            {task}
+                        </div>
+                    }}
+                </div>
+            }}
+        </div>
+    }
+
+    fn move_task(&mut self, target_col: usize) {
+        // The compiler provides the dragged element's data
+        // via the drop event context
+    }
+}
+
+// --- Sortable list ---
+
+component SortableList() {
+    let mut items: Vec<String> = vec!["First", "Second", "Third", "Fourth"];
+
+    render {
+        <ul>
+            {for item in self.items {
+                <li draggable droppable on:drop={self.reorder}>
+                    {item}
+                </li>
+            }}
+        </ul>
+    }
+
+    fn reorder(&mut self) {
+        // Compiler handles the reorder logic
+    }
+}
+
+// --- What the compiler generates ---
+//
+// 1. Pointer event handlers (works on touch + mouse)
+// 2. Drag preview element (CSS transform, no DOM clone)
+// 3. Drop zone highlighting
+// 4. Accessible: draggable items get aria-grabbed, drop zones get aria-dropeffect
+// 5. Keyboard support: Space to grab, arrows to move, Enter to drop

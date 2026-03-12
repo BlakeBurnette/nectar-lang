@@ -648,6 +648,66 @@ impl TypeChecker {
             });
         }
 
+        // Register clipboard namespace functions
+        {
+            self.fn_sigs.insert("clipboard::copy".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("clipboard::paste".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("clipboard::copy_image".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+        }
+
+        // Register crypto namespace functions
+        {
+            self.fn_sigs.insert("crypto::sha256".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::sha512".to_string(), Ty::Function {
+                params: vec![Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::hmac".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::encrypt".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::decrypt".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::sign".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::verify".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_, Ty::String_],
+                ret: Box::new(Ty::Bool),
+            });
+            self.fn_sigs.insert("crypto::derive_key".to_string(), Ty::Function {
+                params: vec![Ty::String_, Ty::String_],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::random_uuid".to_string(), Ty::Function {
+                params: vec![],
+                ret: Box::new(Ty::String_),
+            });
+            self.fn_sigs.insert("crypto::random_bytes".to_string(), Ty::Function {
+                params: vec![Ty::I32],
+                ret: Box::new(Ty::String_),
+            });
+        }
+
         for item in &program.items {
             match item {
                 Item::Struct(s) => {
@@ -936,6 +996,9 @@ impl TypeChecker {
                 Item::Upload(_) => { /* upload type checking TODO */ }
                 Item::Db(_) => { /* db type checking TODO */ }
                 Item::Cache(_) => { /* cache type checking TODO */ }
+                Item::Breakpoints(_) => { /* breakpoints are config-only */ }
+                Item::Theme(_) => { /* theme type checking TODO */ }
+                Item::Animation(_) => { /* animation type checking TODO */ }
             }
         }
 
@@ -1961,6 +2024,12 @@ impl TypeChecker {
                 self.infer_expr(name, env);
                 Ty::Bool
             }
+            Expr::VirtualList { items, item_height, template, .. } => {
+                self.infer_expr(items, env);
+                self.infer_expr(item_height, env);
+                self.infer_expr(template, env);
+                Ty::Unit
+            }
         }
     }
 
@@ -2796,6 +2865,8 @@ mod tests {
             error_boundary: None,
             chunk: None,
             on_destroy: None,
+            a11y: None,
+            shortcuts: vec![],
             span: span(),
         })]);
 

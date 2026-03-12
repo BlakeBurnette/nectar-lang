@@ -1,0 +1,87 @@
+// animations.nectar — Built-in animation primitives
+//
+// Spring physics, keyframes, and stagger — no Framer Motion, no GSAP.
+// Animations are declarative, composable, and hardware-accelerated.
+
+// --- Spring animations ---
+// Physically-based motion with configurable stiffness and damping.
+
+component Modal() {
+    let mut visible: bool = false;
+
+    spring enter {
+        from: { opacity: 0.0, transform: "scale(0.95) translateY(10px)" },
+        to: { opacity: 1.0, transform: "scale(1) translateY(0)" },
+        stiffness: 300,
+        damping: 25,
+    }
+
+    spring exit {
+        from: { opacity: 1.0, transform: "scale(1)" },
+        to: { opacity: 0.0, transform: "scale(0.95)" },
+        stiffness: 400,
+        damping: 30,
+    }
+
+    fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+
+    render {
+        <button on:click={self.toggle}>"Toggle Modal"</button>
+        {if self.visible {
+            <div class="modal" animate:enter={enter} animate:exit={exit}>
+                <h2>"Spring-animated Modal"</h2>
+                <p>"Physically-based motion feels natural"</p>
+            </div>
+        }}
+    }
+}
+
+// --- Keyframe animations ---
+// Traditional CSS keyframes when you need precise control.
+
+component LoadingSpinner() {
+    keyframes spin {
+        from: { transform: "rotate(0deg)" },
+        to: { transform: "rotate(360deg)" },
+        duration: 1000,
+        iteration: "infinite",
+        easing: "linear",
+    }
+
+    render {
+        <div class="spinner" animate={spin}>
+        </div>
+    }
+}
+
+// --- Stagger animations ---
+// Animate lists with sequential delays.
+
+component FeedList(items: Vec<String>) {
+    stagger feed_enter {
+        from: { opacity: 0.0, transform: "translateY(20px)" },
+        to: { opacity: 1.0, transform: "translateY(0)" },
+        delay: 50,
+        spring: { stiffness: 200, damping: 20 },
+    }
+
+    render {
+        <ul>
+            {for item in self.items {
+                <li animate:enter={feed_enter}>
+                    {item}
+                </li>
+            }}
+        </ul>
+    }
+}
+
+// --- What the compiler generates ---
+//
+// 1. Springs use requestAnimationFrame with physics simulation
+// 2. Keyframes compile to @keyframes CSS rules (GPU-accelerated)
+// 3. Stagger assigns incremental animation-delay to each child
+// 4. All animations respect prefers-reduced-motion automatically
+// 5. Exit animations delay element removal until animation completes

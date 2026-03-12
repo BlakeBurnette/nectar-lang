@@ -644,6 +644,9 @@ fn walk_item(item: &Item, enums: &HashMap<String, EnumInfo>, errors: &mut Vec<Ex
         Item::Upload(_) => {}
         Item::Db(_) => {}
         Item::Cache(_) => {}
+        Item::Breakpoints(_) => {}
+        Item::Theme(_) => {}
+        Item::Animation(_) => {}
     }
 }
 

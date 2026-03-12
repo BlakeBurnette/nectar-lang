@@ -249,6 +249,8 @@ mod tests {
                     error_boundary: None,
                     chunk: None,
                     on_destroy: None,
+                    a11y: None,
+                    shortcuts: vec![],
                     span: dummy_span(),
                 }),
                 Item::LazyComponent(LazyComponentDef {
@@ -275,6 +277,8 @@ mod tests {
                         error_boundary: None,
                         chunk: None,
                         on_destroy: None,
+                        a11y: None,
+                        shortcuts: vec![],
                         span: dummy_span(),
                     },
                     span: dummy_span(),

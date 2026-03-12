@@ -1,0 +1,69 @@
+// shortcuts.nectar — Keyboard shortcuts
+//
+// The `shortcut` keyword binds key combinations to component methods.
+// The compiler handles cross-platform key mapping (Cmd on Mac, Ctrl on others).
+
+component TextEditor() {
+    let mut content: String = "";
+    let mut saved: bool = true;
+
+    shortcut "Cmd+S" => self.save;
+    shortcut "Cmd+Z" => self.undo;
+    shortcut "Cmd+Shift+Z" => self.redo;
+    shortcut "Escape" => self.close;
+
+    fn save(&mut self) {
+        // Save content
+        self.saved = true;
+    }
+
+    fn undo(&mut self) {
+        // Undo last change
+    }
+
+    fn redo(&mut self) {
+        // Redo last change
+    }
+
+    fn close(&self) {
+        // Close editor
+    }
+
+    render {
+        <div class="editor">
+            <textarea bind:value={content}></textarea>
+            <footer>
+                {if self.saved { "Saved" } else { "Unsaved changes" }}
+            </footer>
+        </div>
+    }
+}
+
+// --- Global shortcuts ---
+
+component App() {
+    shortcut "Cmd+K" => self.open_search;
+    shortcut "Cmd+/" => self.toggle_help;
+
+    fn open_search(&self) {
+        // Open command palette
+    }
+
+    fn toggle_help(&self) {
+        // Show keyboard shortcut help
+    }
+
+    render {
+        <div>
+            <h1>"App"</h1>
+        </div>
+    }
+}
+
+// --- What the compiler generates ---
+//
+// 1. keydown listeners with proper modifier detection
+// 2. Cmd → Ctrl mapping on non-Mac platforms
+// 3. preventDefault to avoid browser defaults (e.g., Cmd+S won't save page)
+// 4. Shortcuts are scoped to the component's DOM — no global conflicts
+// 5. Accessible: shortcuts are announced to screen readers

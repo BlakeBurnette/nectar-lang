@@ -61,6 +61,12 @@ pub enum Item {
     Db(DbDef),
     /// Cache definition — intelligent data caching with queries and mutations
     Cache(CacheDef),
+    /// Responsive breakpoints configuration
+    Breakpoints(BreakpointsDef),
+    /// Theme definition — opt-in light/dark theming
+    Theme(ThemeDef),
+    /// Animation block — spring physics, keyframes, or stagger animations
+    Animation(AnimationBlockDef),
 }
 
 /// Contract definition — an API boundary type that generates:
@@ -89,6 +95,13 @@ pub struct ContractField {
     pub span: Span,
 }
 
+/// Accessibility mode for components and apps
+#[derive(Debug, Clone, PartialEq)]
+pub enum A11yMode {
+    Auto,    // compiler generates full a11y layer
+    Manual,  // developer handles everything
+}
+
 /// App definition — root-level PWA application with manifest, offline support, push
 #[derive(Debug)]
 pub struct AppDef {
@@ -97,6 +110,7 @@ pub struct AppDef {
     pub offline: Option<OfflineDef>,
     pub push: Option<PushDef>,
     pub router: Option<RouterDef>,
+    pub a11y: Option<A11yMode>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -394,6 +408,63 @@ pub struct CacheMutationDef {
     pub span: Span,
 }
 
+/// Responsive breakpoints definition
+#[derive(Debug, Clone)]
+pub struct BreakpointsDef {
+    pub breakpoints: Vec<(String, u32)>,  // name -> pixels
+    pub span: Span,
+}
+
+/// Theme definition — opt-in light/dark theming with auto-generation
+#[derive(Debug, Clone)]
+pub struct ThemeDef {
+    pub name: String,
+    pub light: Option<Vec<(String, Expr)>>,
+    pub dark: Option<Vec<(String, Expr)>>,
+    pub dark_auto: bool,              // dark: auto
+    pub primary: Option<Expr>,        // for full auto mode
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Animation block definition — spring physics, keyframes, or stagger
+#[derive(Debug, Clone)]
+pub struct AnimationBlockDef {
+    pub name: String,
+    pub kind: AnimationKind,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// The kind of animation in an animation block
+#[derive(Debug, Clone)]
+pub enum AnimationKind {
+    Spring {
+        stiffness: Option<f64>,
+        damping: Option<f64>,
+        mass: Option<f64>,
+        properties: Vec<String>,
+    },
+    Keyframes {
+        frames: Vec<(f64, Vec<(String, Expr)>)>,
+        duration: Option<String>,
+        easing: Option<String>,
+    },
+    Stagger {
+        animation: String,
+        delay: Option<String>,
+        selector: Option<String>,
+    },
+}
+
+/// Keyboard shortcut definition inside a component
+#[derive(Debug, Clone)]
+pub struct ShortcutDef {
+    pub keys: String,
+    pub body: Block,
+    pub span: Span,
+}
+
 /// Gesture definition inside a component
 #[derive(Debug, Clone)]
 pub struct GestureDef {
@@ -473,6 +544,10 @@ pub struct Component {
     pub chunk: Option<String>,
     /// Lifecycle cleanup callback — `fn on_destroy` method reference
     pub on_destroy: Option<Function>,
+    /// Accessibility mode — `a11y auto` or `a11y manual`
+    pub a11y: Option<A11yMode>,
+    /// Keyboard shortcuts — `shortcut "ctrl+s" { ... }`
+    pub shortcuts: Vec<ShortcutDef>,
     pub span: Span,
 }
 
@@ -1092,6 +1167,15 @@ pub enum Expr {
     /// flag("feature_name") — compile-time feature flag check
     Flag {
         name: Box<Expr>,
+        span: Span,
+    },
+
+    /// virtual list — efficient rendering for large datasets
+    VirtualList {
+        items: Box<Expr>,
+        item_height: Box<Expr>,
+        template: Box<Expr>,
+        buffer: Option<u32>,
         span: Span,
     },
 }

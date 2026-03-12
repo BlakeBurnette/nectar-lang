@@ -1,0 +1,49 @@
+// clipboard.nectar — Clipboard API
+//
+// Read and write the system clipboard with type-safe builtins.
+// No navigator.clipboard boilerplate. No permissions API wrangling.
+
+component CopyButton(text: String) {
+    let mut copied: bool = false;
+
+    fn copy(&mut self) {
+        clipboard.copy(self.text);
+        self.copied = true;
+    }
+
+    render {
+        <button on:click={self.copy}>
+            {if self.copied { "Copied!" } else { "Copy" }}
+        </button>
+    }
+}
+
+component PasteField() {
+    let mut content: String = "";
+
+    fn paste(&mut self) {
+        self.content = clipboard.paste();
+    }
+
+    render {
+        <div>
+            <button on:click={self.paste}>"Paste"</button>
+            <p>{self.content}</p>
+        </div>
+    }
+}
+
+// --- Copy images ---
+
+component ImageCopy(image_url: String) {
+    fn copy_image(&self) {
+        clipboard.copy_image(self.image_url);
+    }
+
+    render {
+        <div>
+            <img src={self.image_url} />
+            <button on:click={self.copy_image}>"Copy Image"</button>
+        </div>
+    }
+}

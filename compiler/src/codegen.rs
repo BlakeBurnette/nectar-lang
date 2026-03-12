@@ -182,6 +182,27 @@ impl WasmCodegen {
         self.line("(import \"animation\" \"cancel\" (func $animation_cancel (param i32)))");
         self.line("(import \"animation\" \"onFinish\" (func $animation_onFinish (param i32 i32)))");
 
+        // Import animate (spring, keyframes, stagger) runtime
+        self.line("");
+        self.line(";; Animate (spring/keyframes/stagger) runtime imports");
+        self.line("(import \"animate\" \"spring\" (func $animate_spring (param i32 i32 i32 i32)))");
+        self.line("(import \"animate\" \"keyframes\" (func $animate_keyframes (param i32 i32 i32 i32)))");
+        self.line("(import \"animate\" \"stagger\" (func $animate_stagger (param i32 i32 i32 i32)))");
+        self.line("(import \"animate\" \"cancel\" (func $animate_cancel (param i32 i32)))");
+
+        // Import shortcuts runtime
+        self.line("");
+        self.line(";; Keyboard shortcuts runtime imports");
+        self.line("(import \"shortcuts\" \"register\" (func $shortcut_register (param i32 i32 i32 i32)))");
+        self.line("(import \"shortcuts\" \"unregister\" (func $shortcut_unregister (param i32 i32)))");
+
+        // Import virtual list runtime
+        self.line("");
+        self.line(";; Virtual list runtime imports");
+        self.line("(import \"virtual\" \"createList\" (func $virtual_create_list (param i32 i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"virtual\" \"updateViewport\" (func $virtual_update_viewport (param i32 i32 i32)))");
+        self.line("(import \"virtual\" \"scrollTo\" (func $virtual_scroll_to (param i32 i32)))");
+
         // Import accessibility (a11y) runtime
         self.line("");
         self.line(";; Accessibility (a11y) runtime imports");
@@ -360,6 +381,55 @@ impl WasmCodegen {
         self.line("(import \"cache\" \"get\" (func $cache_get (param i32 i32 i32 i32) (result i32)))");
         self.line("(import \"cache\" \"invalidate\" (func $cache_invalidate (param i32 i32)))");
 
+        // Responsive breakpoints imports
+        self.line("");
+        self.line(";; Responsive breakpoints imports");
+        self.line("(import \"responsive\" \"registerBreakpoints\" (func $responsive_register (param i32 i32)))");
+        self.line("(import \"responsive\" \"getBreakpoint\" (func $responsive_get_breakpoint (result i32)))");
+
+        // Clipboard imports
+        self.line("");
+        self.line(";; Clipboard imports");
+        self.line("(import \"clipboard\" \"copy\" (func $clipboard_copy (param i32 i32) (result i32)))");
+        self.line("(import \"clipboard\" \"paste\" (func $clipboard_paste (result i32)))");
+        self.line("(import \"clipboard\" \"copyImage\" (func $clipboard_copy_image (param i32 i32) (result i32)))");
+
+        // Drag and drop imports
+        self.line("");
+        self.line(";; Drag and drop imports");
+        self.line("(import \"dnd\" \"makeDraggable\" (func $dnd_make_draggable (param i32 i32 i32 i32)))");
+        self.line("(import \"dnd\" \"makeDroppable\" (func $dnd_make_droppable (param i32 i32 i32 i32)))");
+        self.line("(import \"dnd\" \"getData\" (func $dnd_get_data (result i32)))");
+        self.line("(import \"dnd\" \"setData\" (func $dnd_set_data (param i32 i32)))");
+
+        // Enhanced a11y runtime imports — automatic accessibility
+        self.line("");
+        self.line(";; Enhanced a11y runtime imports");
+        self.line("(import \"a11y\" \"enhance\" (func $a11y_enhance (param i32 i32)))");
+        self.line("(import \"a11y\" \"checkContrast\" (func $a11y_check_contrast (param i32 i32 i32 i32) (result i32)))");
+
+        // Crypto runtime imports
+        self.line("");
+        self.line(";; Crypto runtime imports");
+        self.line("(import \"crypto\" \"sha256\" (func $crypto_sha256 (param i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"sha512\" (func $crypto_sha512 (param i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"hmac\" (func $crypto_hmac (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"encrypt\" (func $crypto_encrypt (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"decrypt\" (func $crypto_decrypt (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"sign\" (func $crypto_sign (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"verify\" (func $crypto_verify (param i32 i32 i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"deriveKey\" (func $crypto_derive_key (param i32 i32 i32 i32) (result i32)))");
+        self.line("(import \"crypto\" \"randomUUID\" (func $crypto_random_uuid (result i32)))");
+        self.line("(import \"crypto\" \"randomBytes\" (func $crypto_random_bytes (param i32) (result i32)))");
+
+        // Theme runtime imports
+        self.line("");
+        self.line(";; Theme runtime imports");
+        self.line("(import \"theme\" \"init\" (func $theme_init (param i32 i32 i32 i32)))");
+        self.line("(import \"theme\" \"toggle\" (func $theme_toggle))");
+        self.line("(import \"theme\" \"set\" (func $theme_set (param i32 i32)))");
+        self.line("(import \"theme\" \"getCurrent\" (func $theme_get_current (result i32)))");
+
         // Allocator (bump allocator for now)
         self.line("");
         self.line("(global $heap_ptr (mut i32) (i32.const 1024))");
@@ -456,6 +526,9 @@ impl WasmCodegen {
             Item::Embed(embed) => self.generate_embed(embed),
             Item::Pdf(pdf) => self.generate_pdf(pdf),
             Item::Cache(cache) => self.generate_cache(cache),
+            Item::Breakpoints(bp) => self.generate_breakpoints(bp),
+            Item::Animation(anim) => self.generate_animation_block(anim),
+            Item::Theme(theme) => self.generate_theme(theme),
             _ => {
                 self.line(&format!(";; TODO: codegen for {:?}", std::mem::discriminant(item)));
             }
@@ -841,6 +914,16 @@ impl WasmCodegen {
 
         // Generate the DOM tree from the render block
         self.generate_template(&comp.render.body, "$root");
+
+        // If a11y: auto, call $a11y_enhance after render to inject ARIA attributes
+        if comp.a11y.as_ref() == Some(&A11yMode::Auto) {
+            self.line("");
+            self.line(";; a11y: auto — enhance component with accessibility attributes");
+            let name_offset = self.store_string(comp_name);
+            self.line(&format!("i32.const {} ;; component name ptr", name_offset));
+            self.line(&format!("i32.const {} ;; component name len", comp_name.len()));
+            self.line("call $a11y_enhance");
+        }
 
         // Register effects for reactive DOM updates
         // Each dynamic expression in render creates an effect that
@@ -1463,6 +1546,168 @@ impl WasmCodegen {
             self.indent -= 1;
             self.line(")");
         }
+    }
+
+    fn generate_breakpoints(&mut self, bp: &BreakpointsDef) {
+        self.line(";; === Responsive Breakpoints ===");
+
+        // Build config JSON: {"mobile":640,"tablet":1024,...}
+        let mut config = String::from("{");
+        for (i, (name, px)) in bp.breakpoints.iter().enumerate() {
+            if i > 0 { config.push(','); }
+            config.push_str(&format!("\"{}\":{}", name, px));
+        }
+        config.push('}');
+
+        let config_offset = self.store_string(&config);
+        let config_len = config.len();
+
+        self.emit("(func $__init_breakpoints (export \"__init_breakpoints\")");
+        self.indent += 1;
+        self.line(&format!("i32.const {}  ;; config ptr", config_offset));
+        self.line(&format!("i32.const {}  ;; config len", config_len));
+        self.line("call $responsive_register");
+        self.indent -= 1;
+        self.line(")");
+    }
+
+    fn generate_animation_block(&mut self, anim: &AnimationBlockDef) {
+        self.line(&format!(";; === Animation: {} ===", anim.name));
+        let name_offset = self.store_string(&anim.name);
+        let name_len = anim.name.len();
+
+        match &anim.kind {
+            AnimationKind::Spring { stiffness, damping, mass, properties } => {
+                let config = format!(
+                    "{{\"stiffness\":{},\"damping\":{},\"mass\":{},\"properties\":[{}]}}",
+                    stiffness.unwrap_or(120.0),
+                    damping.unwrap_or(14.0),
+                    mass.unwrap_or(1.0),
+                    properties.iter().map(|p| format!("\"{}\"", p)).collect::<Vec<_>>().join(",")
+                );
+                let config_offset = self.store_string(&config);
+                let config_len = config.len();
+
+                self.emit(&format!("(func $__init_anim_{} (export \"__init_anim_{}\")", anim.name, anim.name));
+                self.indent += 1;
+                self.line(&format!("i32.const {} ;; name ptr", name_offset));
+                self.line(&format!("i32.const {} ;; name len", name_len));
+                self.line(&format!("i32.const {} ;; config ptr", config_offset));
+                self.line(&format!("i32.const {} ;; config len", config_len));
+                self.line("call $animate_spring");
+                self.indent -= 1;
+                self.line(")");
+            }
+            AnimationKind::Keyframes { frames, duration, easing } => {
+                let mut frames_json = String::from("[");
+                for (i, (pct, props)) in frames.iter().enumerate() {
+                    if i > 0 { frames_json.push(','); }
+                    frames_json.push_str(&format!("{{\"offset\":{}", pct / 100.0));
+                    for (name, _val) in props {
+                        frames_json.push_str(&format!(",\"{}\":\"\"", name));
+                    }
+                    frames_json.push('}');
+                }
+                frames_json.push(']');
+
+                let config = format!(
+                    "{{\"frames\":{},\"duration\":\"{}\",\"easing\":\"{}\"}}",
+                    frames_json,
+                    duration.as_deref().unwrap_or("300ms"),
+                    easing.as_deref().unwrap_or("ease-out")
+                );
+                let config_offset = self.store_string(&config);
+                let config_len = config.len();
+
+                self.emit(&format!("(func $__init_anim_{} (export \"__init_anim_{}\")", anim.name, anim.name));
+                self.indent += 1;
+                self.line(&format!("i32.const {} ;; name ptr", name_offset));
+                self.line(&format!("i32.const {} ;; name len", name_len));
+                self.line(&format!("i32.const {} ;; config ptr", config_offset));
+                self.line(&format!("i32.const {} ;; config len", config_len));
+                self.line("call $animate_keyframes");
+                self.indent -= 1;
+                self.line(")");
+            }
+            AnimationKind::Stagger { animation, delay, selector } => {
+                let config = format!(
+                    "{{\"animation\":\"{}\",\"delay\":\"{}\"{}}}",
+                    animation,
+                    delay.as_deref().unwrap_or("50ms"),
+                    selector.as_ref().map(|s| format!(",\"selector\":\"{}\"", s)).unwrap_or_default()
+                );
+                let config_offset = self.store_string(&config);
+                let config_len = config.len();
+
+                self.emit(&format!("(func $__init_anim_{} (export \"__init_anim_{}\")", anim.name, anim.name));
+                self.indent += 1;
+                self.line(&format!("i32.const {} ;; name ptr", name_offset));
+                self.line(&format!("i32.const {} ;; name len", name_len));
+                self.line(&format!("i32.const {} ;; config ptr", config_offset));
+                self.line(&format!("i32.const {} ;; config len", config_len));
+                self.line("call $animate_stagger");
+                self.indent -= 1;
+                self.line(")");
+            }
+        }
+    }
+
+    /// Generate theme initialization code.
+    fn generate_theme(&mut self, theme: &ThemeDef) {
+        self.line(&format!(";; === Theme: {} ===", theme.name));
+
+        // Build config JSON from light/dark entries
+        let mut config = String::from("{");
+
+        // Light theme
+        if let Some(ref entries) = theme.light {
+            config.push_str("\"light\":{");
+            for (i, (key, value)) in entries.iter().enumerate() {
+                if i > 0 { config.push(','); }
+                config.push_str(&format!("\"{}\":", key));
+                match value {
+                    Expr::StringLit(s) => config.push_str(&format!("\"{}\"", s)),
+                    _ => config.push_str("null"),
+                }
+            }
+            config.push('}');
+        }
+
+        // Dark theme
+        if let Some(ref entries) = theme.dark {
+            if theme.light.is_some() { config.push(','); }
+            config.push_str("\"dark\":{");
+            for (i, (key, value)) in entries.iter().enumerate() {
+                if i > 0 { config.push(','); }
+                config.push_str(&format!("\"{}\":", key));
+                match value {
+                    Expr::StringLit(s) => config.push_str(&format!("\"{}\"", s)),
+                    _ => config.push_str("null"),
+                }
+            }
+            config.push('}');
+        }
+
+        // Dark auto flag
+        if theme.dark_auto {
+            if theme.light.is_some() || theme.dark.is_some() { config.push(','); }
+            config.push_str("\"darkAuto\":true");
+        }
+
+        config.push('}');
+
+        let name_offset = self.store_string(&theme.name);
+        let config_offset = self.store_string(&config);
+
+        self.emit(&format!("(func $__init_theme_{} (export \"__init_theme_{}\")", theme.name, theme.name));
+        self.indent += 1;
+        self.line(&format!("i32.const {} ;; name ptr", name_offset));
+        self.line(&format!("i32.const {} ;; name len", theme.name.len()));
+        self.line(&format!("i32.const {} ;; config ptr", config_offset));
+        self.line(&format!("i32.const {} ;; config len", config.len()));
+        self.line("call $theme_init");
+        self.indent -= 1;
+        self.line(")");
     }
 
     /// Generate permission metadata and URL/storage validation for a component.
@@ -2792,6 +3037,15 @@ impl WasmCodegen {
                 self.line(";; flag — feature flag check");
                 self.generate_expr(name);
                 self.line("call $flag_is_enabled");
+            }
+            Expr::VirtualList { items, item_height, template, buffer, .. } => {
+                self.line(";; virtual list — create virtualized list for large datasets");
+                self.generate_expr(items);
+                self.generate_expr(item_height);
+                self.generate_expr(template);
+                let buf = buffer.unwrap_or(5);
+                self.line(&format!("i32.const {} ;; overscan buffer", buf));
+                self.line("call $virtual_create_list");
             }
             _ => {
                 self.line(";; TODO: codegen for expr");

@@ -3666,6 +3666,119 @@ const FlagRuntime = {
   },
 };
 
+// =========================================================================
+// Responsive Breakpoint Runtime — media-query-free responsive design
+// =========================================================================
+
+const ResponsiveRuntime = {
+  _breakpoints: { mobile: 640, tablet: 1024, desktop: 1200 },
+  _current: 'desktop',
+  _listeners: [],
+
+  registerBreakpoints(configPtr, configLen) {
+    const config = JSON.parse(readString(configPtr, configLen));
+    ResponsiveRuntime._breakpoints = config;
+    ResponsiveRuntime._update();
+    window.addEventListener('resize', () => ResponsiveRuntime._update());
+  },
+
+  getBreakpoint() { return ResponsiveRuntime._current; },
+
+  _update() {
+    const w = window.innerWidth;
+    const bps = Object.entries(ResponsiveRuntime._breakpoints).sort((a, b) => a[1] - b[1]);
+    let current = bps[bps.length - 1][0];
+    for (const [name, px] of bps) {
+      if (w < px) { current = name; break; }
+    }
+    if (current !== ResponsiveRuntime._current) {
+      ResponsiveRuntime._current = current;
+      ResponsiveRuntime._listeners.forEach(fn => fn(current));
+    }
+  },
+
+  onChange(fn) { ResponsiveRuntime._listeners.push(fn); },
+};
+
+// =========================================================================
+// Clipboard Runtime — async clipboard read/write
+// =========================================================================
+
+const ClipboardRuntime = {
+  async copy(textPtr, textLen) {
+    try {
+      await navigator.clipboard.writeText(readString(textPtr, textLen));
+      return 1;
+    } catch { return 0; }
+  },
+  async paste() {
+    try { return await navigator.clipboard.readText(); }
+    catch { return ''; }
+  },
+  async copyImage(dataPtr, dataLen) {
+    try {
+      const data = readString(dataPtr, dataLen);
+      const blob = await fetch(data).then(r => r.blob());
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      return 1;
+    } catch { return 0; }
+  },
+};
+
+// =========================================================================
+// Drag and Drop Runtime — declarative drag-and-drop
+// =========================================================================
+
+const DndRuntime = {
+  _dragData: null,
+  _dragSource: null,
+
+  makeDraggable(selectorPtr, selectorLen, dataPtr, dataLen) {
+    const selector = readString(selectorPtr, selectorLen);
+    const data = dataLen > 0 ? readString(dataPtr, dataLen) : null;
+    document.querySelectorAll(selector).forEach(el => {
+      el.draggable = true;
+      el.style.cursor = 'grab';
+      el.addEventListener('dragstart', (e) => {
+        DndRuntime._dragData = data || el.textContent;
+        DndRuntime._dragSource = el;
+        el.style.opacity = '0.5';
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', DndRuntime._dragData);
+      });
+      el.addEventListener('dragend', () => {
+        el.style.opacity = '1';
+        el.style.cursor = 'grab';
+        DndRuntime._dragData = null;
+        DndRuntime._dragSource = null;
+      });
+    });
+  },
+
+  makeDroppable(selectorPtr, selectorLen, callbackPtr, callbackLen) {
+    const selector = readString(selectorPtr, selectorLen);
+    document.querySelectorAll(selector).forEach(el => {
+      el.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        el.style.outline = '2px dashed #e94560';
+        e.dataTransfer.dropEffect = 'move';
+      });
+      el.addEventListener('dragleave', () => {
+        el.style.outline = '';
+      });
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        el.style.outline = '';
+        const data = e.dataTransfer.getData('text/plain');
+        el.dispatchEvent(new CustomEvent('nectar-drop', { detail: { data, source: DndRuntime._dragSource } }));
+      });
+    });
+  },
+
+  getData() { return DndRuntime._dragData; },
+  setData(dataPtr, dataLen) { DndRuntime._dragData = readString(dataPtr, dataLen); },
+};
+
 if (typeof window !== "undefined") {
   window.NectarRuntime = NectarRuntime;
   window.AgentManager = AgentManager;
@@ -3694,4 +3807,424 @@ if (typeof window !== "undefined") {
   window.TraceRuntime = TraceRuntime;
   window.FlagRuntime = FlagRuntime;
   window.CacheRuntime = CacheRuntime;
+  window.ResponsiveRuntime = ResponsiveRuntime;
+  window.ClipboardRuntime = ClipboardRuntime;
+  window.DndRuntime = DndRuntime;
+
+  // === Spring/Keyframe/Stagger Animation Runtime ===
+  const AnimateRuntime = {
+    _animations: new Map(),
+
+    spring(namePtr, nameLen, configPtr, configLen) {
+      const name = readString(namePtr, nameLen);
+      const config = JSON.parse(readString(configPtr, configLen));
+      AnimateRuntime._animations.set(name, {
+        type: 'spring',
+        stiffness: config.stiffness || 120,
+        damping: config.damping || 14,
+        mass: config.mass || 1,
+        properties: config.properties || ['opacity', 'transform'],
+      });
+    },
+
+    keyframes(namePtr, nameLen, configPtr, configLen) {
+      const name = readString(namePtr, nameLen);
+      const config = JSON.parse(readString(configPtr, configLen));
+      AnimateRuntime._animations.set(name, { type: 'keyframes', ...config });
+    },
+
+    stagger(selectorPtr, selectorLen, configPtr, configLen) {
+      const selector = readString(selectorPtr, selectorLen);
+      const config = JSON.parse(readString(configPtr, configLen));
+      const animName = config.animation;
+      const delay = parseInt(config.delay) || 50;
+      const anim = AnimateRuntime._animations.get(animName);
+      if (!anim) return;
+
+      document.querySelectorAll(selector).forEach((el, i) => {
+        setTimeout(() => {
+          if (anim.type === 'spring') {
+            AnimateRuntime._runSpring(el, anim);
+          } else {
+            el.animate(anim.frames, {
+              duration: parseInt(anim.duration) || 300,
+              easing: anim.easing || 'ease-out',
+              fill: 'forwards',
+            });
+          }
+        }, i * delay);
+      });
+    },
+
+    _runSpring(el, config) {
+      let velocity = 0;
+      let position = 0;
+      const target = 1;
+      const { stiffness, damping, mass } = config;
+
+      const step = () => {
+        const force = -stiffness * (position - target);
+        const dampingForce = -damping * velocity;
+        const acceleration = (force + dampingForce) / mass;
+        velocity += acceleration * (1 / 60);
+        position += velocity * (1 / 60);
+
+        config.properties.forEach(prop => {
+          if (prop === 'opacity') el.style.opacity = position;
+          if (prop === 'transform') el.style.transform = `scale(${position})`;
+        });
+
+        if (Math.abs(position - target) > 0.001 || Math.abs(velocity) > 0.001) {
+          requestAnimationFrame(step);
+        }
+      };
+      requestAnimationFrame(step);
+    },
+
+    cancel(namePtr, nameLen) {
+      const name = readString(namePtr, nameLen);
+      AnimateRuntime._animations.delete(name);
+    },
+  };
+  window.AnimateRuntime = AnimateRuntime;
+
+  // === Keyboard Shortcuts Runtime ===
+  const ShortcutRuntime = {
+    _shortcuts: new Map(),
+    _listening: false,
+
+    register(keysPtr, keysLen, callbackId, _componentLen) {
+      const keys = readString(keysPtr, keysLen).toLowerCase();
+      ShortcutRuntime._shortcuts.set(keys, callbackId);
+
+      if (!ShortcutRuntime._listening) {
+        document.addEventListener('keydown', ShortcutRuntime._handler);
+        ShortcutRuntime._listening = true;
+      }
+    },
+
+    unregister(keysPtr, keysLen) {
+      const keys = readString(keysPtr, keysLen).toLowerCase();
+      ShortcutRuntime._shortcuts.delete(keys);
+    },
+
+    _handler(e) {
+      const parts = [];
+      if (e.ctrlKey || e.metaKey) parts.push('ctrl');
+      if (e.shiftKey) parts.push('shift');
+      if (e.altKey) parts.push('alt');
+      const key = e.key.toLowerCase();
+      if (!['control', 'shift', 'alt', 'meta'].includes(key)) parts.push(key);
+      const combo = parts.join('+');
+
+      const callbackId = ShortcutRuntime._shortcuts.get(combo);
+      if (callbackId !== undefined) {
+        e.preventDefault();
+        if (typeof instance !== 'undefined' && instance.exports[`__shortcut_${callbackId}`]) {
+          instance.exports[`__shortcut_${callbackId}`]();
+        }
+      }
+    },
+  };
+  window.ShortcutRuntime = ShortcutRuntime;
+
+  // === Virtual List Runtime ===
+  const VirtualListRuntime = {
+    _lists: new Map(),
+    _nextId: 1,
+
+    createList(containerPtr, containerLen, totalItems, itemHeight, buffer) {
+      const selector = readString(containerPtr, containerLen);
+      const id = VirtualListRuntime._nextId++;
+      const container = document.querySelector(selector);
+      if (!container) return id;
+
+      const config = {
+        totalItems,
+        itemHeight,
+        buffer: buffer || 5,
+        container,
+        renderedItems: new Map(),
+      };
+      const totalHeight = totalItems * itemHeight;
+
+      container.style.overflow = 'auto';
+      container.style.position = 'relative';
+
+      const spacer = document.createElement('div');
+      spacer.style.height = `${totalHeight}px`;
+      spacer.style.position = 'relative';
+      container.appendChild(spacer);
+
+      config.spacer = spacer;
+      config.viewport = container;
+      VirtualListRuntime._lists.set(id, config);
+
+      container.addEventListener('scroll', () => VirtualListRuntime._render(id));
+      VirtualListRuntime._render(id);
+
+      return id;
+    },
+
+    _render(id) {
+      const config = VirtualListRuntime._lists.get(id);
+      if (!config) return;
+
+      const scrollTop = config.viewport.scrollTop;
+      const viewHeight = config.viewport.clientHeight;
+      const startIdx = Math.max(0, Math.floor(scrollTop / config.itemHeight) - config.buffer);
+      const endIdx = Math.min(
+        config.totalItems - 1,
+        Math.ceil((scrollTop + viewHeight) / config.itemHeight) + config.buffer
+      );
+
+      for (const [idx, el] of config.renderedItems) {
+        if (idx < startIdx || idx > endIdx) {
+          el.remove();
+          config.renderedItems.delete(idx);
+        }
+      }
+
+      for (let i = startIdx; i <= endIdx; i++) {
+        if (!config.renderedItems.has(i)) {
+          const el = document.createElement('div');
+          el.style.position = 'absolute';
+          el.style.top = `${i * config.itemHeight}px`;
+          el.style.height = `${config.itemHeight}px`;
+          el.style.width = '100%';
+          el.setAttribute('data-virtual-index', i);
+
+          if (typeof instance !== 'undefined' && instance.exports.__virtual_render_item) {
+            instance.exports.__virtual_render_item(id, i);
+          } else {
+            el.textContent = `Item ${i}`;
+          }
+
+          config.spacer.appendChild(el);
+          config.renderedItems.set(i, el);
+        }
+      }
+    },
+
+    updateViewport(id, _scrollTop, _viewHeight) {
+      VirtualListRuntime._render(id);
+    },
+
+    scrollTo(id, index) {
+      const config = VirtualListRuntime._lists.get(id);
+      if (config) config.viewport.scrollTop = index * config.itemHeight;
+    },
+  };
+  window.VirtualListRuntime = VirtualListRuntime;
+
+  // =========================================================================
+  // A11y Enhanced Runtime — automatic accessibility
+  // =========================================================================
+
+  const A11yEnhancedRuntime = {
+    _nextId: 1,
+
+    enhance(componentPtr, componentLen) {
+      const name = readString(componentPtr, componentLen);
+      const root = document.querySelector(`[data-nectar-component="${name}"]`);
+      if (!root) return;
+
+      // Auto-add keyboard handlers to interactive elements
+      root.querySelectorAll('[on\\:click]:not(button):not(a)').forEach(el => {
+        if (!el.getAttribute('tabindex')) el.setAttribute('tabindex', '0');
+        if (!el.getAttribute('role')) el.setAttribute('role', 'button');
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
+        });
+      });
+
+      // Auto-add ARIA to form fields
+      root.querySelectorAll('input, textarea, select').forEach(el => {
+        const label = el.closest('label') || root.querySelector(`label[for="${el.id}"]`);
+        if (label && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')) {
+          const id = el.id || `nectar-input-${A11yEnhancedRuntime._nextId++}`;
+          el.id = id;
+          label.setAttribute('for', id);
+        }
+      });
+
+      // Auto-fix heading hierarchy
+      let expectedLevel = 1;
+      root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(h => {
+        const level = parseInt(h.tagName[1]);
+        if (level > expectedLevel + 1) {
+          h.setAttribute('aria-level', String(expectedLevel + 1));
+        }
+        expectedLevel = Math.min(level, expectedLevel + 1);
+      });
+
+      // Auto-add aria-live for dynamic content regions
+      root.querySelectorAll('[data-nectar-reactive]').forEach(el => {
+        if (!el.getAttribute('aria-live')) {
+          el.setAttribute('aria-live', 'polite');
+        }
+      });
+
+      // Auto-add skip navigation
+      const nav = root.querySelector('nav');
+      const main = root.querySelector('main');
+      if (nav && main && !root.querySelector('.nectar-skip-nav')) {
+        const skip = document.createElement('a');
+        skip.href = '#main-content';
+        skip.className = 'nectar-skip-nav';
+        skip.textContent = 'Skip to main content';
+        skip.style.cssText = 'position:absolute;left:-9999px;top:0;z-index:9999;padding:8px 16px;background:#000;color:#fff;';
+        skip.addEventListener('focus', () => { skip.style.left = '0'; });
+        skip.addEventListener('blur', () => { skip.style.left = '-9999px'; });
+        root.prepend(skip);
+        if (!main.id) main.id = 'main-content';
+      }
+    },
+
+    checkContrast(fgPtr, fgLen, bgPtr, bgLen) {
+      const fg = readString(fgPtr, fgLen);
+      const bg = readString(bgPtr, bgLen);
+      const lum = (hex) => {
+        const r = parseInt(hex.slice(1,3),16)/255;
+        const g = parseInt(hex.slice(3,5),16)/255;
+        const b = parseInt(hex.slice(5,7),16)/255;
+        const srgb = [r,g,b].map(c => c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4));
+        return 0.2126*srgb[0] + 0.7152*srgb[1] + 0.0722*srgb[2];
+      };
+      const l1 = Math.max(lum(fg), lum(bg));
+      const l2 = Math.min(lum(fg), lum(bg));
+      const ratio = (l1 + 0.05) / (l2 + 0.05);
+      return ratio >= 4.5 ? 1 : 0;
+    },
+  };
+  window.A11yEnhancedRuntime = A11yEnhancedRuntime;
+
+  // =========================================================================
+  // Crypto Runtime — cryptography builtins
+  // =========================================================================
+
+  const NectarCryptoRuntime = {
+    async sha256(inputPtr, inputLen) {
+      const data = new TextEncoder().encode(readString(inputPtr, inputLen));
+      const hash = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+    async sha512(inputPtr, inputLen) {
+      const data = new TextEncoder().encode(readString(inputPtr, inputLen));
+      const hash = await crypto.subtle.digest('SHA-512', data);
+      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+    async hmac(keyPtr, keyLen, dataPtr, dataLen) {
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(readString(keyPtr, keyLen)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(readString(dataPtr, dataLen)));
+      return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+    async encrypt(plainPtr, plainLen, keyPtr, keyLen) {
+      const keyData = new TextEncoder().encode(readString(keyPtr, keyLen)).slice(0, 32);
+      const key = await crypto.subtle.importKey('raw', keyData, 'AES-GCM', false, ['encrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(readString(plainPtr, plainLen)));
+      const combined = new Uint8Array(iv.length + encrypted.byteLength);
+      combined.set(iv); combined.set(new Uint8Array(encrypted), iv.length);
+      return btoa(String.fromCharCode(...combined));
+    },
+    async decrypt(cipherPtr, cipherLen, keyPtr, keyLen) {
+      const keyData = new TextEncoder().encode(readString(keyPtr, keyLen)).slice(0, 32);
+      const key = await crypto.subtle.importKey('raw', keyData, 'AES-GCM', false, ['decrypt']);
+      const combined = Uint8Array.from(atob(readString(cipherPtr, cipherLen)), c => c.charCodeAt(0));
+      const iv = combined.slice(0, 12);
+      const data = combined.slice(12);
+      const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+      return new TextDecoder().decode(decrypted);
+    },
+    async sign(msgPtr, msgLen, keyPtr, keyLen) {
+      const keyData = await crypto.subtle.importKey('raw', new TextEncoder().encode(readString(keyPtr, keyLen)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', keyData, new TextEncoder().encode(readString(msgPtr, msgLen)));
+      return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+    async verify(msgPtr, msgLen, sigPtr, sigLen, keyPtr, keyLen) {
+      const keyData = await crypto.subtle.importKey('raw', new TextEncoder().encode(readString(keyPtr, keyLen)), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+      const sigBytes = new Uint8Array(readString(sigPtr, sigLen).match(/.{2}/g).map(b => parseInt(b, 16)));
+      return await crypto.subtle.verify('HMAC', keyData, sigBytes, new TextEncoder().encode(readString(msgPtr, msgLen))) ? 1 : 0;
+    },
+    async deriveKey(passPtr, passLen, saltPtr, saltLen) {
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(readString(passPtr, passLen)), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(readString(saltPtr, saltLen)), iterations: 100000, hash: 'SHA-256' }, key, 256);
+      return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+    randomUUID() { return crypto.randomUUID(); },
+    randomBytes(n) { return Array.from(crypto.getRandomValues(new Uint8Array(n))).map(b => b.toString(16).padStart(2,'0')).join(''); },
+  };
+  window.NectarCryptoRuntime = NectarCryptoRuntime;
+
+  // =========================================================================
+  // Theme Runtime — opt-in light/dark theming
+  // =========================================================================
+
+  const ThemeRuntime = {
+    _themes: {},
+    _current: null,
+
+    init(namePtr, nameLen, configPtr, configLen) {
+      const name = readString(namePtr, nameLen);
+      const config = JSON.parse(readString(configPtr, configLen));
+      ThemeRuntime._themes = config;
+
+      const saved = localStorage.getItem('nectar-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const initial = saved || (prefersDark ? 'dark' : 'light');
+      ThemeRuntime._apply(initial);
+
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('nectar-theme')) {
+          ThemeRuntime._apply(e.matches ? 'dark' : 'light');
+        }
+      });
+    },
+
+    toggle() {
+      const next = ThemeRuntime._current === 'light' ? 'dark' : 'light';
+      ThemeRuntime.set(next);
+    },
+
+    set(themePtr, themeLen) {
+      const theme = typeof themePtr === 'string' ? themePtr : readString(themePtr, themeLen);
+      localStorage.setItem('nectar-theme', theme);
+      ThemeRuntime._apply(theme);
+    },
+
+    getCurrent() { return ThemeRuntime._current; },
+
+    _apply(mode) {
+      ThemeRuntime._current = mode;
+      let vars = ThemeRuntime._themes[mode] || {};
+
+      if (mode === 'dark' && !ThemeRuntime._themes.dark && ThemeRuntime._themes.darkAuto && ThemeRuntime._themes.light) {
+        vars = ThemeRuntime._generateDark(ThemeRuntime._themes.light);
+      }
+
+      const root = document.documentElement;
+      for (const [key, value] of Object.entries(vars)) {
+        root.style.setProperty(`--theme-${key}`, value);
+      }
+      root.setAttribute('data-theme', mode);
+    },
+
+    _generateDark(light) {
+      const dark = {};
+      for (const [key, value] of Object.entries(light)) {
+        if (typeof value === 'string' && value.startsWith('#') && value.length === 7) {
+          const r = parseInt(value.slice(1,3), 16);
+          const g = parseInt(value.slice(3,5), 16);
+          const b = parseInt(value.slice(5,7), 16);
+          const dr = 255 - r, dg = 255 - g, db = 255 - b;
+          dark[key] = `#${dr.toString(16).padStart(2,'0')}${dg.toString(16).padStart(2,'0')}${db.toString(16).padStart(2,'0')}`;
+        } else {
+          dark[key] = value;
+        }
+      }
+      return dark;
+    },
+  };
+  window.ThemeRuntime = ThemeRuntime;
 }
